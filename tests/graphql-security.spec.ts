@@ -3,8 +3,10 @@ import { buildSchema, parse, validate } from 'graphql';
 import { typeDefs } from '@/lib/graphql/typeDefs';
 import { graphqlValidationRules, maxDepthRule, maxFieldCountRule } from '@/lib/graphql/security';
 
-// The schema is built with `buildSchema(typeDefs)` so that `validate` uses the
-// same graphql instance.
+// The schema is built from SDL with `buildSchema(typeDefs)` using the same `graphql`
+// package instance that provides `validate`, avoiding cross-realm schema mismatches
+// while validating security rules against the type definitions without requiring
+// executable resolvers.
 const schema = buildSchema(typeDefs);
 
 describe('graphql depth limit', () => {

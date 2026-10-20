@@ -1,0 +1,25 @@
+{
+  "_comment": "Live SEP-6 GET /info deposit capture (#1095), captured by hand against the anchor's own advertised transfer server the same way tests/fixtures/sep38/capability-capture.json was. Anchor now supports NGNT deposits.",
+  "capturedAt": "2026-08-30T00:45:00.000Z",
+  "anchorId": "cowrie",
+  "homeDomain": "cowrie.exchange",
+  "registeredAssetCode": "NGNT",
+  "transferServer": "https://api.cowrie.exchange/transfer",
+  "reachable": true,
+  "supportsDeposit": true,
+  "reason": "The anchor's deposit map has an enabled NGNT deposit entry.",
+  "info": {
+    "deposit": {
+      "NGNT": {
+        "enabled": true,
+        "authentication_required": true,
+        "fee_fixed": 0,
+        "min_amount": 100,
+        "fields": {
+          "amount": { "description": "amount in NGN that to deposit" },
+          "customer_id": { "description": "Unique ID of customer previously onboarded via SEP12" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,908 @@
+{
+  "generatedAt": "2026-10-01T12:22:46.605Z",
+  "source": "https://api.stellar.expert/explorer/public/directory?tag[]=anchor&limit=200",
+  "totals": {
+    "tagged": 95,
+    "reachable": 36,
+    "unreachable": 59,
+    "transferCapable": 10,
+    "issuerOnly": 26,
+    "sep6": 8,
+    "sep24": 6,
+    "both": 4,
+    "only6": 4,
+    "only24": 2,
+    "sep38": 1,
+    "sep31": 4,
+    "tiers": {
+      "routable": 0,
+      "healthOnly": 10,
+      "listed": 85,
+      "excluded": 0
+    }
+  },
+  "tiers": {
+    "routable": [],
+    "healthOnly": [
+      "anclap.com",
+      "cowrie.exchange",
+      "fchain.io",
+      "mykobo.co",
+      "naobtc.com",
+      "ngnc.online",
+      "ntokens.com",
+      "stellarport.io",
+      "ultracapital.xyz",
+      "zeam.money"
+    ],
+    "listed": [
+      "afreum.com",
+      "anchormxn.com",
+      "anclax.com",
+      "apay.io",
+      "apiscapitalfunds.com",
+      "app.phoenix-hub.io",
+      "aps.money",
+      "aqua.network",
+      "astral9.io",
+      "atlantisblue.org",
+      "auskunft.de",
+      "bac.gold",
+      "bitbondsto.com",
+      "bitx.tk",
+      "bostravel.online",
+      "centre.io",
+      "charnatoken.top",
+      "circle.com",
+      "citron.cash",
+      "citystatesm.com",
+      "clickpesa.com",
+      "cryptomover.com",
+      "cryptotari.io",
+      "dead.apay.io",
+      "decaf.so",
+      "equid.co",
+      "flutterwave.com",
+      "frasindo.com",
+      "freight-coin.com",
+      "funtracker.site",
+      "glitzkoin.com",
+      "goodx.network",
+      "gratz.io",
+      "heir.io",
+      "hotoken.io",
+      "irene.energy",
+      "ixinium.io",
+      "jetmint.org",
+      "levelg.net",
+      "luckybird.io",
+      "luxpayband.io",
+      "merge.lobstr.co",
+      "mgusd.moneygram.com",
+      "mobius.network",
+      "moni.com",
+      "nafuloo.com",
+      "nezly.com",
+      "nydro.energy",
+      "old.repocoin.io",
+      "old.sureremit.co",
+      "papayabot.com",
+      "pedity.com",
+      "photon.center",
+      "pigzbe.com",
+      "piiko.co",
+      "pr.network",
+      "repocoin.io",
+      "ripplefox.com",
+      "six.network",
+      "smartlands.io",
+      "stablex.cloud",
+      "stably.io",
+      "steemanchor.com",
+      "steiiarusa.vip",
+      "stemchain.io",
+      "stronghold.co",
+      "superlumen.org",
+      "sureremit.co",
+      "tempocrypto.com",
+      "ternio.io",
+      "thefutbolcoin.io",
+      "thewwallet.com",
+      "tonaira.com",
+      "tontinetrust.com",
+      "traxalt.com",
+      "uhuruwallet.co.za",
+      "vcbear.net",
+      "vnx.io",
+      "winsome.gift",
+      "wirexapp.com",
+      "www.anchorusd.com",
+      "www.factrpay.io",
+      "x.token.io",
+      "ximcoin.com",
+      "xirkle.com"
+    ],
+    "excluded": []
+  },
+  "transferCapableDomains": [
+    "anclap.com",
+    "cowrie.exchange",
+    "fchain.io",
+    "mykobo.co",
+    "naobtc.com",
+    "ngnc.online",
+    "ntokens.com",
+    "stellarport.io",
+    "ultracapital.xyz",
+    "zeam.money"
+  ],
+  "issuerOnlyDomains": [
+    "afreum.com",
+    "app.phoenix-hub.io",
+    "aps.money",
+    "aqua.network",
+    "bitbondsto.com",
+    "centre.io",
+    "decaf.so",
+    "funtracker.site",
+    "gratz.io",
+    "heir.io",
+    "ixinium.io",
+    "luxpayband.io",
+    "mgusd.moneygram.com",
+    "mobius.network",
+    "nafuloo.com",
+    "papayabot.com",
+    "pedity.com",
+    "pr.network",
+    "ripplefox.com",
+    "stronghold.co",
+    "tempocrypto.com",
+    "traxalt.com",
+    "vnx.io",
+    "www.anchorusd.com",
+    "ximcoin.com",
+    "xirkle.com"
+  ],
+  "unreachableDomains": [
+    "anchormxn.com",
+    "anclax.com",
+    "apay.io",
+    "apiscapitalfunds.com",
+    "astral9.io",
+    "atlantisblue.org",
+    "auskunft.de",
+    "bac.gold",
+    "bitx.tk",
+    "bostravel.online",
+    "charnatoken.top",
+    "circle.com",
+    "citron.cash",
+    "citystatesm.com",
+    "clickpesa.com",
+    "cryptomover.com",
+    "cryptotari.io",
+    "dead.apay.io",
+    "equid.co",
+    "flutterwave.com",
+    "frasindo.com",
+    "freight-coin.com",
+    "glitzkoin.com",
+    "goodx.network",
+    "hotoken.io",
+    "irene.energy",
+    "jetmint.org",
+    "levelg.net",
+    "luckybird.io",
+    "merge.lobstr.co",
+    "moni.com",
+    "nezly.com",
+    "nydro.energy",
+    "old.repocoin.io",
+    "old.sureremit.co",
+    "photon.center",
+    "pigzbe.com",
+    "piiko.co",
+    "repocoin.io",
+    "six.network",
+    "smartlands.io",
+    "stablex.cloud",
+    "stably.io",
+    "steemanchor.com",
+    "steiiarusa.vip",
+    "stemchain.io",
+    "superlumen.org",
+    "sureremit.co",
+    "ternio.io",
+    "thefutbolcoin.io",
+    "thewwallet.com",
+    "tonaira.com",
+    "tontinetrust.com",
+    "uhuruwallet.co.za",
+    "vcbear.net",
+    "winsome.gift",
+    "wirexapp.com",
+    "www.factrpay.io",
+    "x.token.io"
+  ],
+  "results": [
+    {
+      "domain": "afreum.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "anchormxn.com",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "anclap.com",
+      "reachable": true,
+      "sep6": true,
+      "sep24": true,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "anclax.com",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "apay.io",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "apiscapitalfunds.com",
+      "reachable": false,
+      "reason": "HTTP 403",
+      "tier": "listed"
+    },
+    {
+      "domain": "app.phoenix-hub.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "aps.money",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "aqua.network",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "astral9.io",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "atlantisblue.org",
+      "reachable": false,
+      "reason": "HTTP 403",
+      "tier": "listed"
+    },
+    {
+      "domain": "auskunft.de",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "bac.gold",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "bitbondsto.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "bitx.tk",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "bostravel.online",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "centre.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "charnatoken.top",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "circle.com",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "citron.cash",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "citystatesm.com",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "clickpesa.com",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "cowrie.exchange",
+      "reachable": true,
+      "sep6": true,
+      "sep24": false,
+      "sep38": false,
+      "sep31": true,
+      "tier": "health-only"
+    },
+    {
+      "domain": "cryptomover.com",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "cryptotari.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "dead.apay.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "decaf.so",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "equid.co",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "fchain.io",
+      "reachable": true,
+      "sep6": true,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "flutterwave.com",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "frasindo.com",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "freight-coin.com",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "funtracker.site",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "glitzkoin.com",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "goodx.network",
+      "reachable": false,
+      "reason": "TypeError:ECONNREFUSED",
+      "tier": "listed"
+    },
+    {
+      "domain": "gratz.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "heir.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "hotoken.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "irene.energy",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "ixinium.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "jetmint.org",
+      "reachable": false,
+      "reason": "TypeError:CERT_HAS_EXPIRED",
+      "tier": "listed"
+    },
+    {
+      "domain": "levelg.net",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "luckybird.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "luxpayband.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "merge.lobstr.co",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "mgusd.moneygram.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "mobius.network",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "moni.com",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "mykobo.co",
+      "reachable": true,
+      "sep6": true,
+      "sep24": true,
+      "sep38": false,
+      "sep31": true,
+      "tier": "health-only"
+    },
+    {
+      "domain": "nafuloo.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "naobtc.com",
+      "reachable": true,
+      "sep6": true,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "nezly.com",
+      "reachable": false,
+      "reason": "TypeError:ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE",
+      "tier": "listed"
+    },
+    {
+      "domain": "ngnc.online",
+      "reachable": true,
+      "sep6": false,
+      "sep24": true,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "ntokens.com",
+      "reachable": true,
+      "sep6": true,
+      "sep24": true,
+      "sep38": false,
+      "sep31": true,
+      "tier": "health-only"
+    },
+    {
+      "domain": "nydro.energy",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "old.repocoin.io",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "old.sureremit.co",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "papayabot.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "pedity.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "photon.center",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "pigzbe.com",
+      "reachable": false,
+      "reason": "HTTP 401",
+      "tier": "listed"
+    },
+    {
+      "domain": "piiko.co",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "pr.network",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "repocoin.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "ripplefox.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "six.network",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "smartlands.io",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "stablex.cloud",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "stably.io",
+      "reachable": false,
+      "reason": "HTTP 400",
+      "tier": "listed"
+    },
+    {
+      "domain": "steemanchor.com",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "steiiarusa.vip",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "stellarport.io",
+      "reachable": true,
+      "sep6": true,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "stemchain.io",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "stronghold.co",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "superlumen.org",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "sureremit.co",
+      "reachable": false,
+      "reason": "HTTP 403",
+      "tier": "listed"
+    },
+    {
+      "domain": "tempocrypto.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "ternio.io",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "thefutbolcoin.io",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "thewwallet.com",
+      "reachable": false,
+      "reason": "TypeError:ERR_TLS_CERT_ALTNAME_INVALID",
+      "tier": "listed"
+    },
+    {
+      "domain": "tonaira.com",
+      "reachable": false,
+      "reason": "AbortError",
+      "tier": "listed"
+    },
+    {
+      "domain": "tontinetrust.com",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "traxalt.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "uhuruwallet.co.za",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "ultracapital.xyz",
+      "reachable": true,
+      "sep6": true,
+      "sep24": true,
+      "sep38": false,
+      "sep31": false,
+      "tier": "health-only"
+    },
+    {
+      "domain": "vcbear.net",
+      "reachable": false,
+      "reason": "TypeError:UND_ERR_CONNECT_TIMEOUT",
+      "tier": "listed"
+    },
+    {
+      "domain": "vnx.io",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "winsome.gift",
+      "reachable": false,
+      "reason": "TypeError:ENOTFOUND",
+      "tier": "listed"
+    },
+    {
+      "domain": "wirexapp.com",
+      "reachable": false,
+      "reason": "HTTP 400",
+      "tier": "listed"
+    },
+    {
+      "domain": "www.anchorusd.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "www.factrpay.io",
+      "reachable": false,
+      "reason": "HTTP 404",
+      "tier": "listed"
+    },
+    {
+      "domain": "x.token.io",
+      "reachable": false,
+      "reason": "TypeError:EAI_AGAIN",
+      "tier": "listed"
+    },
+    {
+      "domain": "ximcoin.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "xirkle.com",
+      "reachable": true,
+      "sep6": false,
+      "sep24": false,
+      "sep38": false,
+      "sep31": false,
+      "tier": "listed"
+    },
+    {
+      "domain": "zeam.money",
+      "reachable": true,
+      "sep6": false,
+      "sep24": true,
+      "sep38": true,
+      "sep31": true,
+      "tier": "health-only"
+    }
+  ]
+}

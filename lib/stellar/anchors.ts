@@ -1,11 +1,164 @@
-// Anchor and corridor data lives in constants/anchors.ts — the single source of truth.
-// This module re-exports that data and adds SEP-1 resolution helpers that belong
-// in lib/stellar (network calls, dynamic imports) rather than in constants.
-export * from '@/constants/anchors'
+// constants/anchors.ts is the single source of truth for anchor and corridor data.
+// This module re-exports that registry verbatim and adds SEP-1 resolution helpers
+// that belong in lib/stellar (network calls, dynamic imports) rather than in
+// constants. It must never declare its own anchor list — read through the
+// canonical export below so the two can never drift.
+export * from '@/constants/anchors';
 
-import { ANCHORS, CORRIDORS } from '@/constants/anchors'
-import type { Anchor, Corridor, ResolvedAnchor, Sep1TomlData } from '@/types'
+import { ANCHORS, CORRIDORS } from '@/constants/anchors';
+import anchorHealthData from '@/constants/anchor-health.json';
+import type { Anchor, Corridor, ResolvedAnchor, Sep1TomlData } from '@/types';
 
+// ─── Anchor health (stale-anchor auto-disable, #495) ───────────────────────────
+
+/**
+ * Per-anchor health record maintained by the nightly validator
+ * (scripts/validate-anchors.mjs). An anchor that fails TOML resolution for
+ * `thresholdNights` consecutive nights is flagged `degraded` so the UI can hide it
+ * — the anchor stays in the registry so the flag can clear once it recovers.
+ */
+export interface AnchorHealth {
+  /** Consecutive nightly validation failures; reset to 0 on the next success. */
+  consecutiveFailures: number;
+  /** True once `consecutiveFailures` reaches the configured threshold. */
+  degraded: boolean;
+  /** ISO timestamp of the last nightly check, or null if never checked. */
+  lastCheckedAt: string | null;
+  /** Outcome of the last check ('ok' | 'fail' | 'unknown'). */
+  lastStatus: string;
+  /** Failure reason from the last check, or null on success. */
+  lastError: string | null;
+}
+
+/**
+ * The whole nightly ledger: the threshold it was evaluated against, when it was
+ * written, and one record per tracked anchor.
+ */
+export interface AnchorHealthLedger {
+  thresholdNights: number;
+  updatedAt: string | null;
+  anchors: Record<string, AnchorHealth>;
+}
+
+const ANCHOR_HEALTH = anchorHealthData as AnchorHealthLedger;
+
+/**
+ * The committed ledger in full — the source of truth every other reader here
+ * indexes into, and what `/api/v1/anchor-health/ledger` publishes (#1098).
+ */
+export function getAnchorHealthLedger(): AnchorHealthLedger {
+  return ANCHOR_HEALTH;
+}
+
+/** Returns the nightly health record for an anchor, or undefined if untracked. */
+export function getAnchorHealth(id: string): AnchorHealth | undefined {
+  return ANCHOR_HEALTH.anchors[id];
+}
+
+/**
+ * True when an anchor has been auto-flagged `degraded` by the nightly validator
+ * after repeated TOML failures. Degraded anchors are hidden from the corridor
+ * selectors below but remain in the registry.
+ */
+export function isAnchorDegraded(id: string): boolean {
+  return ANCHOR_HEALTH.anchors[id]?.degraded === true;
+}
+
+/** IDs of every anchor currently flagged degraded. */
+export function getDegradedAnchorIds(): string[] {
+  return Object.keys(ANCHOR_HEALTH.anchors).filter((id) => ANCHOR_HEALTH.anchors[id]?.degraded);
+}
+
+// ─── Asset-issuer validation (#489) ─────────────────────────────────────────────
+
+/**
+ * Outcome of comparing an anchor's registered asset issuer against the issuer it
+ * advertises for the same asset code in its resolved stellar.toml.
+ *
+ * - `match`        — the toml lists `assetCode` under the canonical issuer.
+ * - `mismatch`     — the toml lists `assetCode` under a *different* issuer: a
+ *                    look-alike asset reusing a trusted code (e.g. "USDC").
+ * - `missing`      — the toml advertises no issuer for `assetCode` to compare.
+ */
+export type AnchorIssuerStatus = 'match' | 'mismatch' | 'missing';
+
+/** Result of {@link validateAnchorAssetIssuer}. */
+export interface AnchorIssuerValidation {
+  anchorId: string;
+  assetCode: string;
+  /** Canonical issuer the anchor is registered to settle (USDC_ISSUER for USDC anchors). */
+  expectedIssuer: string;
+  /** Issuer advertised for `assetCode` in the resolved toml CURRENCIES, or null if absent. */
+  advertisedIssuer: string | null;
+  status: AnchorIssuerStatus;
+}
+
+/**
+ * Validates that an anchor settles the canonical issuer for its registered asset
+ * rather than a look-alike that merely reuses the asset code. Compares the
+ * anchor's registered `assetIssuer` (e.g. USDC_ISSUER) against the issuer the
+ * anchor publishes for the same code in its stellar.toml `[[CURRENCIES]]`.
+ *
+ * Pure and synchronous so it can be reused by the app, the nightly validator, and
+ * tests. A `mismatch` is the security-relevant case — the anchor advertises a
+ * trusted code under an impostor issuer.
+ */
+export function validateAnchorAssetIssuer(
+  anchor: Pick<Anchor, 'id' | 'assetCode' | 'assetIssuer'>,
+  currencies: Sep1TomlData['CURRENCIES']
+): AnchorIssuerValidation {
+  const advertisedIssuer =
+    currencies.find(
+      (currency) => currency.code === anchor.assetCode && typeof currency.issuer === 'string'
+    )?.issuer ?? null;
+
+  let status: AnchorIssuerStatus;
+  if (advertisedIssuer === null) status = 'missing';
+  else if (advertisedIssuer === anchor.assetIssuer) status = 'match';
+  else status = 'mismatch';
+
+  return {
+    anchorId: anchor.id,
+    assetCode: anchor.assetCode,
+    expectedIssuer: anchor.assetIssuer,
+    advertisedIssuer,
+    status,
+  };
+}
+
+/**
+ * Validates the issuer of every distinct on-chain asset an anchor serves, not just
+ * its primary `assetCode`/`assetIssuer`. A multi-asset anchor (e.g. Latamex: ARST,
+ * BRLT, USDC) could otherwise advertise an impostor issuer for a secondary asset
+ * unnoticed.
+ *
+ * Returns one validation per distinct `(corridor.from, corridor.fromIssuer)` across
+ * `anchor.corridors`, in first-seen order. Native corridors (`fromIssuer === null`)
+ * and corridor ids missing from `corridors` are skipped. `corridors` defaults to the
+ * registry and is injectable for tests.
+ */
+export function validateCorridorAssetIssuers(
+  anchor: Pick<Anchor, 'id' | 'corridors'>,
+  currencies: Sep1TomlData['CURRENCIES'],
+  corridors: Corridor[] = CORRIDORS
+): AnchorIssuerValidation[] {
+  const seen = new Set<string>();
+  const results: AnchorIssuerValidation[] = [];
+  for (const corridorId of anchor.corridors) {
+    const corridor = corridors.find((c) => c.id === corridorId);
+    if (!corridor || corridor.fromIssuer === null) continue;
+    const key = `${corridor.from}:${corridor.fromIssuer}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push(
+      validateAnchorAssetIssuer(
+        { id: anchor.id, assetCode: corridor.from, assetIssuer: corridor.fromIssuer },
+        currencies
+      )
+    );
+  }
+  return results;
+}
 
 // ─── Lookup helpers ───────────────────────────────────────────────────────────
 
@@ -13,68 +166,141 @@ import type { Anchor, Corridor, ResolvedAnchor, Sep1TomlData } from '@/types'
  * Returns the anchor with the given ID.
  * Throws a descriptive error if the ID is not found.
  */
-/**
- * Returns the anchor with the given ID.
- * Throws a descriptive error if the ID is not found.
- */
 export function getAnchorById(id: string): Anchor {
-  const anchor = ANCHORS.find((a) => a.id === id)
+  const anchor = ANCHORS.find((a) => a.id === id);
   if (!anchor) {
-    throw new Error(
-      `Unknown anchor: "${id}". Valid IDs: ${ANCHORS.map((a) => a.id).join(', ')}`
-    )
+    throw new Error(`Unknown anchor: "${id}". Valid IDs: ${ANCHORS.map((a) => a.id).join(', ')}`);
   }
-  return anchor
+  return anchor;
 }
 
 /**
  * Resolves SEP-1 details for the anchor with the given ID.
  * Throws if the anchor is unknown or TOML resolution fails.
  */
+export async function getResolvedAnchorByDomain(homeDomain: string): Promise<ResolvedAnchor> {
+  const anchor = ANCHORS.find((a) => a.homeDomain === homeDomain);
+  if (!anchor) throw new Error(`No anchor found for domain "${homeDomain}"`);
+  return getResolvedAnchorById(anchor.id);
+}
+
 export async function getResolvedAnchorById(id: string): Promise<ResolvedAnchor> {
-  const anchor = getAnchorById(id)
-  const { resolveToml } = await import('./sep1')
-  const result = await resolveToml(anchor.homeDomain)
-  if (!result.ok) throw new Error(result.error)
-  return { ...anchor, ...result.data }
+  const anchor = getAnchorById(id);
+  const { resolveToml } = await import('./sep1');
+  // Use serviceDomain if provided, otherwise fall back to homeDomain
+  const domainToResolve = anchor.serviceDomain || anchor.homeDomain;
+  const result = await resolveToml(domainToResolve);
+  if (!result.ok) throw new Error(result.error);
+  return { ...anchor, ...result.data };
+}
+
+// SEPs that indicate routable transfer capability (deposit/withdrawal).
+// SEP-6: programmatic transfer, SEP-24: interactive transfer.
+// SEP-31 (cross-border payment) is tracked for health/reputation but never routed directly.
+export const ROUTABLE_SEPS: ReadonlyArray<NonNullable<Anchor['seps']>[number]> = ['sep6', 'sep24'];
+
+/**
+ * Returns true if the anchor supports at least one routable transfer SEP
+ * (SEP-6 or SEP-24). SEP-31-only and issuer-only anchors that lack both
+ * are excluded from corridor selectors and the rate engine.
+ */
+export function transferCapable(anchor: Anchor): boolean {
+  return anchor.seps?.some((sep) => ROUTABLE_SEPS.includes(sep)) ?? false;
+}
+
+/**
+ * Returns true if the anchor supports SEP-31 and neither SEP-6 nor SEP-24.
+ * SEP-31-only anchors are tracked for health and survey coverage, but are
+ * never routed into corridor selectors or the rate engine.
+ */
+export function isSep31Only(anchor: Anchor): boolean {
+  const seps = anchor.seps ?? [];
+  return seps.includes('sep31') && !seps.includes('sep6') && !seps.includes('sep24');
+}
+
+/**
+ * Returns all tracked anchors in the registry regardless of routability or health status.
+ * Used by health probes and surveys; routing paths must use `getAnchorsByCorridorId` instead.
+ */
+export function getTrackedAnchors(): Anchor[] {
+  return [...ANCHORS];
 }
 
 /**
  * Returns all anchors that serve the given corridor.
+ * Anchors auto-flagged `degraded` by the nightly validator are excluded so they
+ * stay hidden from selectors (rate solicitation, off-ramp options).
+ * Excludes issuer-only anchors that lack transfer SEPs.
  * Returns an empty array if no anchors support the corridor.
  */
 export function getAnchorsByCorridorId(corridorId: string): Anchor[] {
-  return ANCHORS.filter((a) => a.corridors.includes(corridorId))
+  return ANCHORS.filter((a) => a.corridors.includes(corridorId) && !isAnchorDegraded(a.id)).filter(
+    transferCapable
+  );
 }
 
 /**
- * Resolves SEP-1 details for every known anchor that serves the corridor.
- * Failed anchors are omitted so callers can continue with the live subset.
+ * Returns all deposit-capable anchors that serve the given corridor.
+ * Filters `getAnchorsByCorridorId` to anchors whose `depositEnabled` is not explicitly false.
+ */
+export function getDepositCapableAnchors(corridorId: string): Anchor[] {
+  return getAnchorsByCorridorId(corridorId).filter((a) => a.depositEnabled !== false);
+}
+
+/**
+ * Resolves SEP-1 details for every known, non-degraded anchor that serves the
+ * corridor. Failed anchors are omitted so callers can continue with the live subset.
+ * For each anchor, uses serviceDomain if available, otherwise falls back to homeDomain.
  */
 export async function discoverAnchorsForCorridor(corridorId: string): Promise<ResolvedAnchor[]> {
-  const { resolveToml } = await import('./sep1')
-  const corridorAnchors = ANCHORS.filter((anchor) => anchor.corridors.includes(corridorId))
+  const { resolveToml } = await import('./sep1');
+  const corridorAnchors = ANCHORS.filter(
+    (anchor) => anchor.corridors.includes(corridorId) && !isAnchorDegraded(anchor.id)
+  );
 
   const results = await Promise.allSettled(
     corridorAnchors.map(async (anchor): Promise<ResolvedAnchor> => {
-      const result = await resolveToml(anchor.homeDomain)
-      if (!result.ok) throw new Error(result.error)
-      const sep1 = result.data
+      // Use serviceDomain if provided, otherwise fall back to homeDomain
+      const domainToResolve = anchor.serviceDomain || anchor.homeDomain;
+      const result = await resolveToml(domainToResolve);
+      if (!result.ok) throw new Error(result.error);
+      const sep1 = result.data;
       if (!sep1.TRANSFER_SERVER_SEP0024 || !sep1.WEB_AUTH_ENDPOINT) {
-        throw new Error(`Anchor "${anchor.id}" does not support SEP-24 or SEP-10.`)
+        throw new Error(`Anchor "${anchor.id}" does not support SEP-24 or SEP-10.`);
+      }
+      // Flag look-alike assets: an anchor that advertises our trusted code under a
+      // different issuer is settling an impostor asset. We surface it loudly rather
+      // than drop it — the registry's canonical issuer still governs downstream
+      // SEP-38 identifiers, so the warning is for operators/CI to act on.
+      // The corridor being discovered decides which asset is checked (an anchor may
+      // serve several), not the anchor's primary asset.
+      const corridor = CORRIDORS.find((c) => c.id === corridorId);
+      const issuerCheck =
+        corridor && corridor.fromIssuer !== null
+          ? validateAnchorAssetIssuer(
+              { id: anchor.id, assetCode: corridor.from, assetIssuer: corridor.fromIssuer },
+              sep1.CURRENCIES
+            )
+          : null;
+      if (issuerCheck?.status === 'mismatch') {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[anchors] ${anchor.id} advertises a look-alike ${issuerCheck.assetCode} issuer ` +
+            `(${issuerCheck.advertisedIssuer}); expected ${issuerCheck.expectedIssuer}`
+        );
       }
       return {
         ...anchor,
         ...sep1,
-      }
+      };
     })
-  )
+  );
 
   return results
     .filter((result): result is PromiseFulfilledResult<ResolvedAnchor> => {
-      return result.status === 'fulfilled'
+      return result.status === 'fulfilled';
     })
-    .map((result) => result.value)
+    .map((result) => result.value);
 }
 
 /**
@@ -82,13 +308,13 @@ export async function discoverAnchorsForCorridor(corridorId: string): Promise<Re
  * Throws a descriptive error if the ID is not found.
  */
 export function getCorridorById(id: string): Corridor {
-  const corridor = CORRIDORS.find((c) => c.id === id)
+  const corridor = CORRIDORS.find((c) => c.id === id);
   if (!corridor) {
     throw new Error(
       `Unknown corridor: "${id}". Valid IDs: ${CORRIDORS.map((c) => c.id).join(', ')}`
-    )
+    );
   }
-  return corridor
+  return corridor;
 }
 
 /**
@@ -96,5 +322,90 @@ export function getCorridorById(id: string): Corridor {
  * Used to validate query parameters in API routes.
  */
 export function isValidCorridorId(id: string): boolean {
-  return CORRIDORS.some((c) => c.id === id)
+  return CORRIDORS.some((c) => c.id === id);
+}
+
+// ─── Corridor assets (#ANC002) ────────────────────────────────────────────────
+
+/**
+ * The Stellar asset a corridor carries on its source side, plus the fiat
+ * currency it is pegged to. `issuer` is null for native XLM, so callers can
+ * derive SEP-38 identifiers once instead of re-implementing the native special
+ * case downstream.
+ */
+export interface CorridorAsset {
+  /** Stellar asset code, e.g. 'USDC'. */
+  code: string;
+  /** Issuing account; null for native XLM. */
+  issuer: string | null;
+  /** Fiat currency the asset is pegged to, e.g. 'USD' for USDC. */
+  peg: string;
+}
+
+/**
+ * Returns the asset a corridor carries on its source side — code, issuer, and
+ * fiat peg — resolved from the corridor registry.
+ * Throws the same "Unknown corridor" error as {@link getCorridorById} for an
+ * unknown corridor ID.
+ */
+export function getCorridorAsset(corridorId: string): CorridorAsset {
+  const corridor = getCorridorById(corridorId);
+  return {
+    code: corridor.from,
+    issuer: corridor.fromIssuer,
+    peg: corridor.fromPeg,
+  };
+}
+
+/**
+ * Formats an asset as its SEP-38 identifier: `stellar:native` when the issuer
+ * is null (native XLM), otherwise `` `stellar:${code}:${issuer}` ``.
+ */
+export function sep38AssetId(asset: Pick<CorridorAsset, 'code' | 'issuer'>): string {
+  if (asset.issuer === null) return 'stellar:native';
+  return `stellar:${asset.code}:${asset.issuer}`;
+}
+
+/**
+ * Validates structural rules for anchor registry fields:
+ * - every id in unverifiedCorridors is also in corridors;
+ * - sep31Corridors and corridors are disjoint, and every sep31Corridors id exists in CORRIDORS;
+ * - an anchor with a non-empty sep31Corridors lists 'sep31' in seps.
+ */
+export function registryShapeViolations(anchors: Anchor[], corridors: Corridor[]): string[] {
+  const violations: string[] = [];
+  const validCorridorIds = new Set(corridors.map((c) => c.id));
+
+  for (const anchor of anchors) {
+    if (anchor.unverifiedCorridors) {
+      for (const id of anchor.unverifiedCorridors) {
+        if (!anchor.corridors.includes(id)) {
+          violations.push(
+            `${anchor.id}: unverifiedCorridors contains '${id}' but it is not in corridors`
+          );
+        }
+      }
+    }
+
+    if (anchor.sep31Corridors && anchor.sep31Corridors.length > 0) {
+      if (!anchor.seps?.includes('sep31')) {
+        violations.push(`${anchor.id}: has sep31Corridors but 'sep31' is not in seps`);
+      }
+
+      for (const id of anchor.sep31Corridors) {
+        if (!validCorridorIds.has(id)) {
+          violations.push(
+            `${anchor.id}: sep31Corridors contains '${id}' which is not a known corridor`
+          );
+        }
+        if (anchor.corridors.includes(id)) {
+          violations.push(
+            `${anchor.id}: sep31Corridors and corridors are not disjoint ('${id}' is in both)`
+          );
+        }
+      }
+    }
+  }
+
+  return violations;
 }

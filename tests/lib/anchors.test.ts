@@ -1,52 +1,46 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect } from 'vitest';
+import type { Anchor } from '@/types';
 import {
   ANCHORS,
   CORRIDORS,
-  ANCHOR_HOME_DOMAINS,
   getAnchorById,
   getAnchorsByCorridorId,
+  getDepositCapableAnchors,
   getCorridorById,
   isValidCorridorId,
-} from '@/lib/stellar/anchors'
+  transferCapable,
+  isSep31Only,
+  getTrackedAnchors,
+  ROUTABLE_SEPS,
+} from '@/lib/stellar/anchors';
 
 describe('ANCHORS', () => {
-  it('contains MoneyGram, Cowrie, and Anclap', () => {
-    const ids = ANCHORS.map((a) => a.id)
-    expect(ids).toContain('moneygram')
-    expect(ids).toContain('cowrie')
-    expect(ids).toContain('anclap')
-    expect(ids).toHaveLength(3)
-  })
+  it('contains MoneyGram, Cowrie, Anclap, and nTokens', () => {
+    const ids = ANCHORS.map((a) => a.id);
+    expect(ids).toContain('moneygram');
+    expect(ids).toContain('cowrie');
+    expect(ids).toContain('anclap');
+    expect(ids).toContain('ntokens');
+    expect(ids.length).toBeGreaterThanOrEqual(4);
+  });
 
   it('MoneyGram covers all five primary corridors', () => {
-    const mg = ANCHORS.find((a) => a.id === 'moneygram')!
-    expect(mg.corridors).toContain('usdc-ngn')
-    expect(mg.corridors).toContain('usdc-kes')
-    expect(mg.corridors).toContain('usdc-ghs')
-    expect(mg.corridors).toContain('usdc-mxn')
-    expect(mg.corridors).toContain('usdc-brl')
-  })
-
-  it('Cowrie is only in usdc-ngn', () => {
-    const cowrie = ANCHORS.find((a) => a.id === 'cowrie')!
-    expect(cowrie.corridors).toEqual(['usdc-ngn'])
-  })
-
-
-  it('Anclap covers usdc-ars and usdc-pen', () => {
-    const anclap = ANCHORS.find((a) => a.id === 'anclap')!
-    expect(anclap.corridors).toContain('usdc-ars')
-    expect(anclap.corridors).toContain('usdc-pen')
-  })
-})
+    const mg = ANCHORS.find((a) => a.id === 'moneygram')!;
+    expect(mg.corridors).toContain('usdc-ngn');
+    expect(mg.corridors).toContain('usdc-kes');
+    expect(mg.corridors).toContain('usdc-ghs');
+    expect(mg.corridors).toContain('usdc-mxn');
+    expect(mg.corridors).toContain('usdc-brl');
+  });
+});
 
 describe('CORRIDORS', () => {
-  it('contains 7 corridors', () => {
-    expect(CORRIDORS).toHaveLength(7)
-  })
+  it('contains at least 9 corridors', () => {
+    expect(CORRIDORS.length).toBeGreaterThanOrEqual(9);
+  });
 
   it('contains the expected corridor IDs', () => {
-    const ids = CORRIDORS.map((c) => c.id)
+    const ids = CORRIDORS.map((c) => c.id);
     expect(ids).toEqual(
       expect.arrayContaining([
         'usdc-ngn',
@@ -56,108 +50,242 @@ describe('CORRIDORS', () => {
         'usdc-brl',
         'usdc-ars',
         'usdc-pen',
+        'usdc-eur',
+        'ars-ars',
+        'pen-pen',
       ])
-    )
-  })
-})
-
-describe('ANCHOR_HOME_DOMAINS', () => {
-  it('maps moneygram to stellar.moneygram.com', () => {
-    expect(ANCHOR_HOME_DOMAINS['moneygram']).toBe('stellar.moneygram.com')
-  })
-
-  it('maps cowrie to cowrie.exchange', () => {
-    expect(ANCHOR_HOME_DOMAINS['cowrie']).toBe('cowrie.exchange')
-  })
-
-
-  it('maps anclap to anclap.com', () => {
-    expect(ANCHOR_HOME_DOMAINS['anclap']).toBe('anclap.com')
-  })
-})
+    );
+  });
+});
 
 describe('getAnchorById', () => {
   it('returns the MoneyGram anchor', () => {
-    const anchor = getAnchorById('moneygram')
-    expect(anchor.id).toBe('moneygram')
-    expect(anchor.homeDomain).toBe('stellar.moneygram.com')
-  })
+    const anchor = getAnchorById('moneygram');
+    expect(anchor.id).toBe('moneygram');
+    expect(anchor.homeDomain).toBe('stellar.moneygram.com');
+  });
 
   it('returns the Cowrie anchor', () => {
-    const anchor = getAnchorById('cowrie')
-    expect(anchor.id).toBe('cowrie')
-    expect(anchor.homeDomain).toBe('cowrie.exchange')
-  })
+    const anchor = getAnchorById('cowrie');
+    expect(anchor.id).toBe('cowrie');
+    expect(anchor.homeDomain).toBe('cowrie.exchange');
+  });
 
   it('throws a descriptive error for an unknown id', () => {
-    expect(() => getAnchorById('unknown')).toThrow(/Unknown anchor.*"unknown"/)
-  })
-})
+    expect(() => getAnchorById('unknown')).toThrow(/Unknown anchor.*"unknown"/);
+  });
+});
 
 describe('getAnchorsByCorridorId', () => {
-  it('returns MoneyGram and Cowrie for usdc-ngn', () => {
-    const anchors = getAnchorsByCorridorId('usdc-ngn')
-    const ids = anchors.map((a) => a.id)
-    expect(ids).toContain('moneygram')
-    expect(ids).toContain('cowrie')
-    expect(ids).toHaveLength(2)
-  })
+  it('returns Cowrie for ngnt-ngn', () => {
+    const ids = getAnchorsByCorridorId('ngnt-ngn').map((a) => a.id);
+    expect(ids).toEqual(['cowrie']);
+  });
+
+  it('returns MoneyGram but not Cowrie or NGNC for usdc-ngn', () => {
+    const ids = getAnchorsByCorridorId('usdc-ngn').map((a) => a.id);
+    expect(ids).toContain('moneygram');
+    expect(ids).not.toContain('cowrie');
+    expect(ids).not.toContain('ngnc');
+  });
+
+  it('returns NGNC for ngnc-ngn', () => {
+    const anchors = getAnchorsByCorridorId('ngnc-ngn');
+    const ids = anchors.map((a) => a.id);
+    expect(ids).toEqual(['ngnc']);
+  });
 
   it('returns MoneyGram for usdc-kes', () => {
-    const anchors = getAnchorsByCorridorId('usdc-kes')
-    const ids = anchors.map((a) => a.id)
-    expect(ids).toEqual(['moneygram'])
-  })
+    const anchors = getAnchorsByCorridorId('usdc-kes');
+    const ids = anchors.map((a) => a.id);
+    expect(ids).toEqual(['moneygram']);
+  });
 
   it('returns only MoneyGram for usdc-mxn', () => {
-    const anchors = getAnchorsByCorridorId('usdc-mxn')
-    expect(anchors).toHaveLength(1)
-    expect(anchors[0]?.id).toBe('moneygram')
-  })
+    const anchors = getAnchorsByCorridorId('usdc-mxn');
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]?.id).toBe('moneygram');
+  });
 
-  it('returns only Anclap for usdc-ars', () => {
-    const anchors = getAnchorsByCorridorId('usdc-ars')
-    expect(anchors).toHaveLength(1)
-    expect(anchors[0]?.id).toBe('anclap')
-  })
+  it('returns only Anclap for ars-ars', () => {
+    const anchors = getAnchorsByCorridorId('ars-ars');
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]?.id).toBe('anclap');
+  });
+
+  it('returns only Anclap for pen-pen', () => {
+    const anchors = getAnchorsByCorridorId('pen-pen');
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]?.id).toBe('anclap');
+  });
 
   it('returns an empty array for an unknown corridor', () => {
-    expect(getAnchorsByCorridorId('usdc-xyz')).toEqual([])
-  })
-})
+    expect(getAnchorsByCorridorId('usdc-xyz')).toEqual([]);
+  });
+});
+
+describe('getDepositCapableAnchors', () => {
+  it('excludes ntokens for brl-brl while getAnchorsByCorridorId includes it', () => {
+    const allBrlAnchors = getAnchorsByCorridorId('brl-brl');
+    expect(allBrlAnchors.map((a) => a.id)).toContain('ntokens');
+
+    const depositCapableBrlAnchors = getDepositCapableAnchors('brl-brl');
+    expect(depositCapableBrlAnchors.map((a) => a.id)).not.toContain('ntokens');
+    expect(depositCapableBrlAnchors).toEqual([]);
+  });
+
+  it('returns deposit-capable anchors for usdc-ngn', () => {
+    const depositCapable = getDepositCapableAnchors('usdc-ngn');
+    const ids = depositCapable.map((a) => a.id);
+    expect(ids).toContain('moneygram');
+    expect(ids).not.toContain('cowrie'); // cowrie now serves ngnt-ngn (#1274)
+    expect(ids).not.toContain('ngnc'); // ngnc now serves ngnc-ngn, not usdc-ngn (#1275)
+  });
+
+  it('returns an empty array for an unknown corridor', () => {
+    expect(getDepositCapableAnchors('usdc-xyz')).toEqual([]);
+  });
+});
 
 describe('getCorridorById', () => {
   it('returns the Nigeria corridor', () => {
-    const corridor = getCorridorById('usdc-ngn')
-    expect(corridor.to).toBe('NGN')
-    expect(corridor.countryCode).toBe('NG')
-  })
+    const corridor = getCorridorById('usdc-ngn');
+    expect(corridor.to).toBe('NGN');
+    expect(corridor.countryCode).toBe('NG');
+  });
 
   it('returns the Argentina corridor', () => {
-    const corridor = getCorridorById('usdc-ars')
-    expect(corridor.to).toBe('ARS')
-    expect(corridor.countryCode).toBe('AR')
-  })
+    const corridor = getCorridorById('usdc-ars');
+    expect(corridor.to).toBe('ARS');
+    expect(corridor.countryCode).toBe('AR');
+  });
 
   it('throws a descriptive error for an unknown id', () => {
-    expect(() => getCorridorById('unknown')).toThrow(/Unknown corridor.*"unknown"/)
-  })
-})
+    expect(() => getCorridorById('unknown')).toThrow(/Unknown corridor.*"unknown"/);
+  });
+});
 
 describe('isValidCorridorId', () => {
   it('returns true for usdc-ngn', () => {
-    expect(isValidCorridorId('usdc-ngn')).toBe(true)
-  })
+    expect(isValidCorridorId('usdc-ngn')).toBe(true);
+  });
 
   it('returns true for usdc-ars', () => {
-    expect(isValidCorridorId('usdc-ars')).toBe(true)
-  })
+    expect(isValidCorridorId('usdc-ars')).toBe(true);
+  });
 
   it('returns false for an invalid id', () => {
-    expect(isValidCorridorId('invalid')).toBe(false)
-  })
+    expect(isValidCorridorId('invalid')).toBe(false);
+  });
 
   it('returns false for an empty string', () => {
-    expect(isValidCorridorId('')).toBe(false)
-  })
-})
+    expect(isValidCorridorId('')).toBe(false);
+  });
+});
+
+describe('transferCapable', () => {
+  const issuerOnly: Anchor = {
+    id: 'x',
+    name: 'x',
+    homeDomain: 'x',
+    corridors: [],
+    assetCode: 'x',
+    assetIssuer: 'x',
+    seps: ['sep10'],
+  };
+
+  it('returns false for an issuer-only anchor (SEP-10 auth only)', () => {
+    expect(transferCapable(issuerOnly)).toBe(false);
+  });
+
+  it('returns true for an anchor with SEP-6', () => {
+    expect(transferCapable({ ...issuerOnly, seps: ['sep10', 'sep6'] })).toBe(true);
+  });
+
+  it('returns true for an anchor with SEP-24', () => {
+    expect(transferCapable({ ...issuerOnly, seps: ['sep10', 'sep24'] })).toBe(true);
+  });
+
+  it('returns false for a SEP-31-only anchor (tracked for health, not routed)', () => {
+    expect(transferCapable({ ...issuerOnly, seps: ['sep10', 'sep31'] })).toBe(false);
+  });
+
+  it('returns false when seps is undefined', () => {
+    const { seps: _, ...noSeps } = issuerOnly;
+    expect(transferCapable(noSeps as Anchor)).toBe(false);
+  });
+});
+
+describe('isSep31Only', () => {
+  const baseAnchor: Anchor = {
+    id: 'perahub',
+    name: 'PeraHub',
+    homeDomain: 'perahub.com.ph',
+    corridors: [],
+    assetCode: 'PHP',
+    assetIssuer: 'G...',
+  };
+
+  it('returns true for an anchor with SEP-31 and no SEP-6/SEP-24', () => {
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep10', 'sep31'] })).toBe(true);
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep31'] })).toBe(true);
+  });
+
+  it('returns false for an anchor with SEP-6 or SEP-24 in addition to SEP-31', () => {
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep6', 'sep31'] })).toBe(false);
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep24', 'sep31'] })).toBe(false);
+  });
+
+  it('returns false for an anchor with no SEP-31', () => {
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep10', 'sep24'] })).toBe(false);
+    expect(isSep31Only({ ...baseAnchor, seps: ['sep10'] })).toBe(false);
+    expect(isSep31Only(baseAnchor)).toBe(false);
+  });
+});
+
+describe('getTrackedAnchors', () => {
+  it('returns all anchors in ANCHORS', () => {
+    const tracked = getTrackedAnchors();
+    expect(tracked).toEqual(ANCHORS);
+    expect(tracked.length).toBe(ANCHORS.length);
+  });
+});
+
+describe('getAnchorsByCorridorId excludes non-routable anchors', () => {
+  it('returns only transfer-capable anchors for usdc-ngn', () => {
+    const results = getAnchorsByCorridorId('usdc-ngn');
+    for (const anchor of results) {
+      expect(transferCapable(anchor)).toBe(true);
+    }
+  });
+
+  it('does not include anchors lacking transfer SEPs', () => {
+    const results = getAnchorsByCorridorId('usdc-ngn');
+    const ids = results.map((a) => a.id);
+    expect(ids).toContain('moneygram');
+    expect(ids).not.toContain('cowrie');
+  });
+
+  it('excludes a SEP-31-only anchor even if its corridors field names the corridor', () => {
+    const fakeSep31Anchor: Anchor = {
+      id: 'fake-sep31',
+      name: 'Fake SEP-31',
+      homeDomain: 'fake-sep31.example.com',
+      corridors: ['usdc-ngn'],
+      assetCode: 'USDC',
+      assetIssuer: 'G...',
+      seps: ['sep10', 'sep31'],
+    };
+
+    expect(transferCapable(fakeSep31Anchor)).toBe(false);
+    expect(isSep31Only(fakeSep31Anchor)).toBe(true);
+
+    // Simulated filtering as in getAnchorsByCorridorId
+    const candidates = [fakeSep31Anchor, ...ANCHORS];
+    const filtered = candidates
+      .filter((a) => a.corridors.includes('usdc-ngn'))
+      .filter(transferCapable);
+
+    expect(filtered.map((a) => a.id)).not.toContain('fake-sep31');
+  });
+});

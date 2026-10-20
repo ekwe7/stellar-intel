@@ -15,6 +15,39 @@ vi.mock('@/lib/stellar/sep24', () => ({
   openWithdrawPopup: vi.fn(),
   getWithdrawTransactionRecord: vi.fn(),
 }));
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { configure, render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { ExecuteDrawer } from '@/components/offramp/ExecuteDrawer';
+import type { AnchorRate } from '@/types';
+import { acceptTerms, clearAcceptance } from '@/lib/consent';
+
+// This spec drives the whole off-ramp flow, and its sep10 mock calls
+// `importActual`, which loads the real Stellar SDK on first use. On a cold or
+// loaded runner that transform alone can exceed testing-library's default 1000 ms
+// `waitFor` limit, which made tests here fail intermittently (about 1 run in 8
+// locally) with "expected vi.fn() to be called" or "Unable to find an element".
+// The default test timeout is 15 s, so there is plenty of headroom.
+configure({ asyncUtilTimeout: 5000 });
+
+// ─── Module mocks ─────────────────────────────────────────────────────────────
+
+vi.mock('@/lib/stellar/sep10', async () => {
+  const actual = await vi.importActual<any>('@/lib/stellar/sep10');
+  return {
+    ...actual,
+    authenticate: vi.fn(),
+  };
+});
+
+vi.mock('@/lib/stellar/sep24', async () => {
+  const actual = await vi.importActual<any>('@/lib/stellar/sep24');
+  return {
+    ...actual,
+    initiateWithdraw: vi.fn(),
+    openWithdrawPopup: vi.fn(),
+    getWithdrawTransactionRecord: vi.fn(),
+  };
+});
 
 vi.mock('@/lib/stellar/sep1', () => ({
   getTransferServer: vi.fn(),
@@ -24,6 +57,20 @@ vi.mock('@/lib/stellar/anchors', () => ({
   getAnchorById: vi.fn(),
   getResolvedAnchorById: vi.fn(),
 }));
+
+vi.mock('@/lib/stellar/sep38', async () => {
+  const actual = await vi.importActual<any>('@/lib/stellar/sep38');
+  return {
+    ...actual,
+    postSep38Quote: vi.fn(),
+  };
+});
+
+vi.mock('@/lib/stellar/anchors', async () => {
+  const actual =
+    await vi.importActual<typeof import('@/lib/stellar/anchors')>('@/lib/stellar/anchors');
+  return { ...actual, getAnchorById: vi.fn(), getResolvedAnchorById: vi.fn() };
+});
 
 vi.mock('@/lib/stellar/horizon', () => ({
   buildWithdrawPayment: vi.fn(),
@@ -57,12 +104,53 @@ vi.mock('@/components/offramp/KycIframe', () => ({
 
 import * as sep10 from '@/lib/stellar/sep10';
 import * as sep24 from '@/lib/stellar/sep24';
+vi.mock('@/components/offramp/KycIframe', async () => {
+  const React = await import('react');
+  return {
+    KycIframe: ({
+      origin,
+      onComplete,
+      onCancel,
+    }: {
+      origin: string;
+      onComplete: (transactionId: string) => void;
+      onCancel: () => void;
+      onError: (error: Error) => void;
+      url: string;
+    }) => {
+      React.useEffect(() => {
+        const handler = (event: MessageEvent) => {
+          if (event.origin !== origin) return;
+          const data = event.data as { type?: string; transaction_id?: string };
+          if (data.type === 'stellar_transaction_created' && data.transaction_id) {
+            onComplete(data.transaction_id);
+          } else if (data.type === 'stellar_cancel') {
+            onCancel();
+          }
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+      }, [origin, onCancel, onComplete]);
+
+      return React.createElement('div', { 'data-testid': 'kyc-iframe-mock' });
+    },
+  };
+});
+
+import * as sep10 from '@/lib/stellar/sep10';
+import * as sep24 from '@/lib/stellar/sep24';
+import * as sep38 from '@/lib/stellar/sep38';
+import * as sep1 from '@/lib/stellar/sep1';
 import * as anchors from '@/lib/stellar/anchors';
 import * as horizon from '@/lib/stellar/horizon';
 
 const mockAuthenticate = vi.mocked(sep10.authenticate);
 const mockInitiateWithdraw = vi.mocked(sep24.initiateWithdraw);
 const mockGetWithdrawTransactionRecord = vi.mocked(sep24.getWithdrawTransactionRecord);
+const mockOpenWithdrawPopup = vi.mocked(sep24.openWithdrawPopup);
+const mockGetWithdrawTransactionRecord = vi.mocked(sep24.getWithdrawTransactionRecord);
+const mockPostSep38Quote = vi.mocked(sep38.postSep38Quote);
+const _mockGetTransferServer = vi.mocked(sep1.getTransferServer);
 const mockGetAnchorById = vi.mocked(anchors.getAnchorById);
 const mockGetResolvedAnchorById = vi.mocked(anchors.getResolvedAnchorById);
 const mockBuildWithdrawPayment = vi.mocked(horizon.buildWithdrawPayment);
@@ -97,7 +185,33 @@ const RESOLVED_ANCHOR = {
   TRANSFER_SERVER_SEP0024: 'https://transfer.cowrie.exchange',
   WEB_AUTH_ENDPOINT: 'https://auth.cowrie.exchange',
   SIGNING_KEY: 'G...',
+  domain: 'cowrie.exchange',
+  ANCHOR_QUOTE_SERVER: null,
+  NETWORK_PASSPHRASE: null,
+  ORG_URL: null,
+  ORG_SUPPORT_EMAIL: null,
+  ORG_SUPPORT_URL: null,
+  CURRENCIES: [
+    { code: 'USDC', issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' },
+  ],
   capabilities: { sep10: true, sep24: true, sep38: false, sep12: false },
+};
+
+const SEP38_ANCHOR = {
+  ...RESOLVED_ANCHOR,
+  ANCHOR_QUOTE_SERVER: 'https://quotes.cowrie.exchange',
+  capabilities: { sep10: true, sep24: true, sep38: true, sep12: false },
+};
+
+const FIRM_QUOTE = {
+  id: 'quote-firm-abc',
+  price: '1580',
+  total_price: '1578',
+  sell_amount: '100',
+  buy_amount: '157800',
+  fee: { total: '2' },
+  expires_at: new Date(Date.now() + 60_000).toISOString(),
+  context: 'sep24' as const,
 };
 
 const PUBLIC_KEY = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ012345678901234567890123456789';
@@ -112,6 +226,19 @@ const AUTH = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockKycAction = 'complete';
+  // These tests exercise execution, not consent. Pre-accept the Terms for the
+  // test wallet so the one-time acknowledgment gate (#741) does not stand in
+  // front of every assertion — the gate itself is covered in tests/consent.spec.tsx.
+  acceptTerms(PUBLIC_KEY);
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      text: async () => '',
+    })) as unknown as typeof fetch
+  );
   mockGetAnchorById.mockReturnValue(ANCHOR);
   mockGetResolvedAnchorById.mockResolvedValue(RESOLVED_ANCHOR);
   mockAuthenticate.mockResolvedValue(AUTH);
@@ -120,6 +247,7 @@ beforeEach(() => {
     url: 'https://anchor.example/kyc',
     id: 'txn-abc-123',
   });
+  mockOpenWithdrawPopup.mockResolvedValue('txn-abc-123');
   mockGetWithdrawTransactionRecord.mockResolvedValue({
     withdrawAnchorAccount: 'GANCHOR123',
     memo: 'TEST_MEMO',
@@ -127,6 +255,10 @@ beforeEach(() => {
   });
   mockBuildWithdrawPayment.mockResolvedValue({} as never);
   mockSignAndSubmitPayment.mockResolvedValue({ hash: 'abc123txhash' } as never);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -191,6 +323,39 @@ describe('ExecuteDrawer', () => {
     render(
       <ExecuteDrawer
         rate={RATE}
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
+
+    expect(mockAuthenticate).toHaveBeenCalledWith(RESOLVED_ANCHOR, PUBLIC_KEY);
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    // In happy path, simulate completion
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('abc123txhash')).toBeInTheDocument());
+
+    expect(mockBuildWithdrawPayment).toHaveBeenCalled();
+    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
+  });
+
+  it('executes with the selected non-USDC corridor asset', async () => {
+    const brlRate = { ...RATE, corridorId: 'brl-brl' };
+    mockGetResolvedAnchorById.mockResolvedValue(SEP38_ANCHOR);
+    mockPostSep38Quote.mockResolvedValue(FIRM_QUOTE);
+
+    render(
+      <ExecuteDrawer
+        rate={brlRate}
         amount="100"
         publicKey={PUBLIC_KEY}
         onClose={vi.fn()}
@@ -206,6 +371,67 @@ describe('ExecuteDrawer', () => {
 
   it('shows the error when the user cancels the KYC popup', async () => {
     mockKycAction = 'cancel';
+    expect(screen.getByText('100 BRL')).toBeInTheDocument();
+    expect(screen.getByText('2 BRL')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+    expect(mockPostSep38Quote).toHaveBeenCalledWith(
+      'https://quotes.cowrie.exchange',
+      AUTH.jwt,
+      expect.objectContaining({
+        sell_asset: 'stellar:BRL:GDVKY2GU2DRXWTBEYJJWSFXIGBZV6AZNBVVSUHEPZI54LIS6BA7DVVSP',
+      })
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-brl' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(mockSignAndSubmitPayment).toHaveBeenCalled());
+    expect(mockInitiateWithdraw).toHaveBeenCalledWith(
+      SEP38_ANCHOR,
+      expect.objectContaining({
+        assetCode: 'BRL',
+        assetIssuer: 'GDVKY2GU2DRXWTBEYJJWSFXIGBZV6AZNBVVSUHEPZI54LIS6BA7DVVSP',
+      }),
+      expect.anything()
+    );
+    expect(mockBuildWithdrawPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        assetCode: 'BRL',
+        assetIssuer: 'GDVKY2GU2DRXWTBEYJJWSFXIGBZV6AZNBVVSUHEPZI54LIS6BA7DVVSP',
+      })
+    );
+  });
+
+  it('shows the error message and a Retry button for an unclassified (retryable) failure', async () => {
+    mockAuthenticate.mockRejectedValue(new Error('SEP-10 challenge failed'));
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByText('SEP-10 challenge failed')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('shows dedicated switch-network guidance when Freighter is on the wrong network', async () => {
+    const NetworkMismatchError = vi.mocked(sep10).NetworkMismatchError;
+    mockAuthenticate.mockRejectedValue(new NetworkMismatchError('Mainnet (Public)', 'Testnet'));
 
     render(
       <ExecuteDrawer
@@ -221,6 +447,60 @@ describe('ExecuteDrawer', () => {
 
     await waitFor(() =>
       expect(screen.getByText('User cancelled the transaction')).toBeInTheDocument()
+      expect(
+        screen.getByText(/Switch network in Freighter to Mainnet \(Public\)/)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/currently set to Testnet/)).toBeInTheDocument();
+    // A network mismatch needs the user to switch Freighter's network first —
+    // retrying the same sign would just fail again, so it's non-retryable.
+    expect(screen.getByRole('button', { name: 'Start Over' })).toBeInTheDocument();
+  });
+
+  it('shows the error when the user cancels the KYC popup', async () => {
+    mockInitiateWithdraw.mockResolvedValueOnce({
+      type: 'interactive_customer_info_needed',
+      url: 'https://anchor.example/kyc',
+      id: 'tx-123',
+    });
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    // Wait for auth to complete
+    await waitFor(() => expect(mockAuthenticate).toHaveBeenCalled());
+
+    // Wait for the popup to open
+    await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
+
+    // The component sets isKycPending = true.
+    // Close the popup simulating a cancellation:
+    act(() => {
+      // In tests, window.removeEventListener is not easily triggered by the mock popup
+      // unless we manually dispatch the message event it expects.
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_cancel' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(
+      () => {
+        expect(screen.getByText('Start Off-ramp')).toBeInTheDocument();
+        expect(screen.queryByText(/User cancelled the transaction/)).not.toBeInTheDocument();
+      },
+      { timeout: 2000 }
     );
   });
 
@@ -247,6 +527,24 @@ describe('ExecuteDrawer', () => {
       amountOut: '150000',
     } as never);
 
+  it('closes the drawer on Escape in idle state', () => {
+    const onClose = vi.fn();
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={onClose}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('closes the drawer on Escape in error state', async () => {
+    const onClose = vi.fn();
+    mockAuthenticate.mockRejectedValue(new Error('Auth failed'));
     render(
       <ExecuteDrawer
         rate={RATE}
@@ -254,6 +552,7 @@ describe('ExecuteDrawer', () => {
         publicKey={PUBLIC_KEY}
         minReceive="151743.20"
         onClose={vi.fn()}
+        onClose={onClose}
         onExecuteStarted={vi.fn()}
       />
     );
@@ -283,6 +582,73 @@ describe('ExecuteDrawer', () => {
       memoType: 'text',
       amountOut: '155000',
     } as never);
+    await screen.findByText('Auth failed');
+
+    // The Escape handler closes over `step`, so it is torn down and
+    // re-registered on every transition. `findByText` resolves at commit, but
+    // that re-registration is a passive effect that runs after paint — so a
+    // synchronous keyDown on the next line can reach the listener still built
+    // for `step === 'authenticating'`, whose guard rejects it. That is the
+    // node-22 flake in #947. Draining effects first removes the race.
+    //
+    // Not wrapped in `waitFor`: that retries its callback, so a slow first
+    // attempt would fire Escape twice and break toHaveBeenCalledOnce().
+    await act(async () => {});
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('does not close the drawer on Escape in done or mid-flow states', async () => {
+    const onClose = vi.fn();
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={onClose}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+    await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
+
+    // In authenticating/initiating step
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Wait for the KYC step to mount before settling it. Dispatching the message
+    // as soon as initiateWithdraw has merely been *called* loses the event on a
+    // slow runner, because the drawer has not reached 'kyc' yet and never gets
+    // to 'done'. The happy-path test waits the same way.
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    // Settle KYC to reach done step
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('abc123txhash')).toBeInTheDocument());
+
+    expect(onClose).toHaveBeenCalledOnce();
+    onClose.mockClear();
+
+    // In done step
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  // ─── Firm SEP-38 quote wiring ─────────────────────────────────────────────
+
+  it('requests a firm SEP-38 quote and threads quote_id into the withdraw request for a SEP-38 anchor', async () => {
+    mockGetResolvedAnchorById.mockResolvedValue(SEP38_ANCHOR);
+    mockPostSep38Quote.mockResolvedValue(FIRM_QUOTE);
 
     render(
       <ExecuteDrawer
@@ -312,6 +678,32 @@ describe('ExecuteDrawer', () => {
       amountOut: undefined,
     } as never);
 
+    await waitFor(() =>
+      expect(mockPostSep38Quote).toHaveBeenCalledWith(
+        'https://quotes.cowrie.exchange',
+        AUTH.jwt,
+        expect.objectContaining({
+          sell_asset: `stellar:${SEP38_ANCHOR.assetCode}:${SEP38_ANCHOR.assetIssuer}`,
+          buy_asset: 'iso4217:NGN',
+          sell_amount: '100',
+          context: 'sep24',
+        })
+      )
+    );
+
+    await waitFor(() =>
+      expect(mockInitiateWithdraw).toHaveBeenCalledWith(
+        SEP38_ANCHOR,
+        expect.objectContaining({ quoteId: FIRM_QUOTE.id }),
+        expect.anything()
+      )
+    );
+
+    // Firm quote countdown is visible in the summary panel.
+    expect(screen.getByRole('timer')).toHaveAccessibleName(/Firm quote expires in/);
+  });
+
+  it('skips the firm quote step and omits quoteId for anchors without SEP-38 support', async () => {
     render(
       <ExecuteDrawer
         rate={RATE}
@@ -342,6 +734,20 @@ describe('ExecuteDrawer', () => {
       memoType: 'text',
       amountOut: '100', // Below floor if checked
     } as never);
+    await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
+
+    expect(mockPostSep38Quote).not.toHaveBeenCalled();
+    const [, params] = mockInitiateWithdraw.mock.calls[0]!;
+    expect(params).not.toHaveProperty('quoteId');
+    expect(screen.queryByRole('timer')).not.toBeInTheDocument();
+  });
+
+  it('shows a re-quote prompt instead of silently completing when the firm quote expires mid-flow', async () => {
+    mockGetResolvedAnchorById.mockResolvedValue(SEP38_ANCHOR);
+    mockPostSep38Quote.mockResolvedValue({
+      ...FIRM_QUOTE,
+      expires_at: new Date(Date.now() + 20).toISOString(),
+    });
 
     render(
       <ExecuteDrawer
@@ -361,5 +767,66 @@ describe('ExecuteDrawer', () => {
 
     expect(mockSignAndSubmitPayment).toHaveBeenCalled();
     expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    // Let the quote's expiry timer fire before the (human-driven) KYC step completes.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText(/Your firm quote expired before the transaction/)).toBeInTheDocument()
+    );
+    expect(mockBuildWithdrawPayment).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+});
+
+describe('ExecuteDrawer — Terms gate (#741)', () => {
+  it('prompts for consent instead of executing on a wallet that has not accepted', async () => {
+    clearAcceptance(PUBLIC_KEY);
+    const { authenticate } = await import('@/lib/stellar/sep10');
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /start off-ramp|sign intent/i }));
+
+    // The consent dialog appears and execution has not begun — no SEP-10 auth,
+    // which is the first thing handleExecute does.
+    expect(await screen.findByRole('dialog', { name: /before you continue/i })).toBeVisible();
+    expect(authenticate).not.toHaveBeenCalled();
+  });
+
+  it('does not prompt a wallet that has already accepted', () => {
+    acceptTerms(PUBLIC_KEY);
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /start off-ramp|sign intent/i }));
+
+    expect(screen.queryByRole('dialog', { name: /before you continue/i })).toBeNull();
   });
 });

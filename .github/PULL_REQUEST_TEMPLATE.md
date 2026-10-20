@@ -40,7 +40,12 @@ symbols with file_path:line_number when it helps.
 Example:
   - `lib/stellar/sep10.ts:54` — assert mainnet network passphrase at parse time
   - `components/offramp/ExecuteDrawer.tsx` — propagate `{ transactionId, jwt }`
-    to the page on success so `StatusTracker` mounts (fixes #002)
+    to the page on success so `StatusTracker` mounts (fixes the
+    StatusTracker-never-mounts bug)
+
+NOTE: never leave an example issue number here or in the "Closes #" line
+above. A closing keyword (Closes/Fixes/Resolves #N) auto-closes that exact
+issue on merge — only ever reference the one real issue your PR resolves.
 -->
 
 -
@@ -62,19 +67,38 @@ If you did not add a test, justify it. "Trivial refactor" or "doc-only" are
 valid. "Hard to test" is not.
 -->
 
-**Automated**
-- `npm run typecheck` · ⏳ not run / ✅ green / ❌ failing
+**Automated** — run the block for whatever you touched. See
+[CONTRIBUTING.md § Per-surface checks](../blob/main/CONTRIBUTING.md#per-surface-checks).
+
+_Root (always):_
+
+- `npm run format:check` · ⏳ not run / ✅ green / ❌ failing
 - `npm run lint` · ⏳ not run / ✅ green / ❌ failing
+- `npm run typecheck` · ⏳ not run / ✅ green / ❌ failing
 - `npm run test` · ⏳ not run / ✅ green / ❌ failing
 - `npm run build` · ⏳ not run / ✅ green / ❌ failing
+- `npm run emit-openapi` → no diff, or spec committed · ⏳ / ✅ / ❌ / n-a
 
-**New / modified tests**
--
+_Rust (if `contracts/` or `crates/` changed):_
+
+- `cargo fmt --check` · ⏳ / ✅ / ❌ / n-a
+- `cargo clippy --all-targets -- -D warnings` · ⏳ / ✅ / ❌ / n-a
+- `cargo test --locked` · ⏳ / ✅ / ❌ / n-a
+
+_Python (if `packages/python-sdk/` changed):_
+
+- `pytest` · ⏳ / ✅ / ❌ / n-a
+- `mypy src` · ⏳ / ✅ / ❌ / n-a
+- No generated file hand-edited (only `wrapper.py` is ours) · ⏳ / ✅ / ❌ / n-a
+
+## **New / modified tests**
 
 **Manual verification** (if applicable)
+
 <!-- e.g. "Connected Freighter on mainnet, executed USDC→NGN for $5 via
 MoneyGram testnet deployment, observed StatusTracker reach `completed` in
 3m12s. Stellar Expert link: …" -->
+
 -
 
 ## Screenshots / recordings
@@ -90,8 +114,8 @@ For pure backend / doc / CI PRs, write "N/A — no user-visible change".
 -->
 
 | Before | After |
-| --- | --- |
-|  |  |
+| ------ | ----- |
+|        |       |
 
 ## Checklist
 
@@ -101,6 +125,7 @@ merge a PR with an unaddressed box.
 -->
 
 **Correctness**
+
 - [ ] The PR title follows Conventional Commits (auto-linted)
 - [ ] One logical change; unrelated cleanup was split into a separate PR
 - [ ] `npm run typecheck` passes
@@ -109,26 +134,30 @@ merge a PR with an unaddressed box.
 - [ ] `npm run build` passes
 
 **Data integrity**
-- [ ] No fabricated rates, stub prices, or placeholder exchange rates (see [`issue.md #005`](../issue.md))
+
+- [ ] No fabricated rates, stub prices, or placeholder exchange rates
 - [ ] No `isMock`, `// MOCK`, `// TODO: replace with real data`, or commented-out real code
-- [ ] If touching an anchor: the anchor's `stellar.toml` is publicly resolvable at `https://{domain}/.well-known/stellar.toml` and contains `TRANSFER_SERVER_SEP0024`
+- [ ] If touching an anchor: the anchor's `stellar.toml` is publicly resolvable at `https://{domain}/.well-known/stellar.toml` and contains `TRANSFER_SERVER_SEP0024` (if the anchor registers `sep24`) or `TRANSFER_SERVER` (SEP-6)
 - [ ] If touching SEP-10: network passphrase assertion is intact (mainnet only)
 - [ ] If touching SEP-24: the 10s `AbortController` timeout is intact on anchor fetches
 - [ ] If touching the status poll: terminal states (`completed | refunded | error`) still stop the SWR loop
 
-**Security & non-custody** (see [`docs/NON_CUSTODY.md`](../docs/NON_CUSTODY.md) once it lands)
+**Security & non-custody** (see [`docs/NON_CUSTODY.md`](../docs/NON_CUSTODY.md))
+
 - [ ] No new code path holds user keys, user funds, or long-lived anchor JWTs
 - [ ] Every signing action is performed by the user's wallet (Freighter today)
 - [ ] No secrets committed; `.env.local` is unchanged; new env vars are added to `.env.example`
 
 **Docs**
+
 - [ ] User-facing behaviour change → `CHANGELOG.md` entry under `[Unreleased]`
 - [ ] API / schema change → relevant `docs/*.md` updated in the same PR
 - [ ] Architecture change → [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) updated (file map, diagram, or invariants as applicable)
-- [ ] Public-facing feature → screenshot added to `docs/showcase/images/` when relevant
+- [ ] Public-facing feature → screenshot attached to the PR description when relevant
 - [ ] New env var → `.env.example` + README env table updated
 
 **Release hygiene**
+
 - [ ] If this touches a wave deliverable, the matching `[ ]` in [`docs/ROADMAP.md`](../docs/ROADMAP.md) is updated
 - [ ] No dependency added without justification in the PR description
 - [ ] No breaking change hidden inside a non-breaking commit

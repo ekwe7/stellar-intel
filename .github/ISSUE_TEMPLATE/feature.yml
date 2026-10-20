@@ -1,9 +1,9 @@
 name: ✨ Feature request
 description: Propose something new — a capability, a refactor, a test you wish we had. For line-level scope that's already on the roadmap, link it instead.
-title: "[FEAT] [SCOPE] <short description>"
+title: '[FEAT] [SCOPE] <short description>'
 labels:
   - feature
-  - triage
+  - needs-triage
 body:
   - type: markdown
     attributes:
@@ -12,7 +12,7 @@ body:
         1. Check [`docs/ROADMAP.md`](../blob/main/docs/ROADMAP.md) — if it's
            already planned in a wave, link that wave and open a sub-issue
            instead of a fresh feature request.
-        2. Check [`issue.md`](../blob/main/issue.md) — the 250 engineering
+        2. Check the [GitHub issue tracker](../issues) — the engineering
            tickets covering v1 and v2. If your idea is already a ticket,
            just link it.
         3. For significant changes, open a Discussion first. Feature requests
@@ -60,19 +60,17 @@ body:
       label: Target wave
       description: Which milestone does this belong to? See [`docs/ROADMAP.md`](../blob/main/docs/ROADMAP.md).
       options:
-        - v1.0 — Core Executable
-        - v1.1 — Hardening + SEP-38
-        - v1.2 — Router + Seeds
-        - v1.3 — Polish + Release Gate
-        - v2.0 — Reputation as Product Surface
-        - v2.1 — Soroban Oracle Live
-        - v2.2 — Multi-Anchor Split Routing
-        - v2.3 — Public Reputation API + Bootstrap
-        - v3 — Guaranteed
-        - v4 — Universal (SDK + MCP + widget)
-        - v5 — Institutional
-        - cross-cutting (docs, ops, observability, security)
-        - unscoped — discuss wave placement
+        - Wave 1.0 — Core Executable
+        - Wave 1.1 — Hardening + SEP-38
+        - Wave 1.2 — Router + Seeds
+        - Wave 1.3 — Polish + Release Gate
+        - Wave 1.4 — SEP-6
+        - Wave 1.5 — Anchor Fleet
+        - Wave 1.6 — Landing Polish
+        - Wave 2.0 — Reputation as Product Surface
+        - Wave 2.1 — Soroban Oracle Live
+        - Rung 1 — Data Infra
+        - Unsure / not wave-scoped
     validations:
       required: true
 
@@ -96,7 +94,10 @@ body:
         - reputation
         - oracle
         - mcp
-        - sdk
+        - sdk-ts
+        - sdk-py
+        - sdk-rs
+        - contracts
         - api
         - ui
         - types
@@ -124,6 +125,9 @@ body:
         - React UI / components
         - Hooks / data fetching
         - API routes (`app/api/*`)
+        - TypeScript SDK (`packages/sdk`)
+        - Python SDK (`packages/python-sdk`)
+        - Rust consumer crate (`crates/stellar-intel-reputation`)
         - CI / workflows
         - Docs only
         - None — additive on top of existing
@@ -136,13 +140,13 @@ body:
       label: Is this a breaking change?
       description: Breaking = changes a shipped API, env var, URL, MCP tool signature, or Soroban contract interface. See `docs/ARCHITECTURE.md § 9` invariants.
       options:
-        - "No"
-        - "Yes — API / schema change"
-        - "Yes — env or config change"
-        - "Yes — UI URL or route change"
-        - "Yes — MCP tool signature change"
-        - "Yes — Soroban contract interface change"
-        - "Unsure — needs review"
+        - 'No'
+        - 'Yes — API / schema change'
+        - 'Yes — env or config change'
+        - 'Yes — UI URL or route change'
+        - 'Yes — MCP tool signature change'
+        - 'Yes — Soroban contract interface change'
+        - 'Unsure — needs review'
     validations:
       required: true
 
@@ -186,7 +190,7 @@ body:
     attributes:
       label: Pre-flight
       options:
-        - label: I searched open and closed issues and `issue.md`; this is not a duplicate
+        - label: I searched open and closed issues; this is not a duplicate
           required: true
         - label: This is not already on [`docs/ROADMAP.md`](../blob/main/docs/ROADMAP.md) (or if it is, I've linked the wave above)
           required: true

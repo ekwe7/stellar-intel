@@ -1,20 +1,38 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import { authenticate } from '@/lib/stellar/sep10';
+import { useEffect, useRef, useState, type TouchEvent as ReactTouchEvent } from 'react';
+import { authenticate, NetworkMismatchError } from '@/lib/stellar/sep10';
 import { initiateWithdraw, getWithdrawTransactionRecord } from '@/lib/stellar/sep24';
-import { getResolvedAnchorById } from '@/lib/stellar/anchors';
+import { getCorridorAsset, getResolvedAnchorById, sep38AssetId } from '@/lib/stellar/anchors';
 import { buildWithdrawPayment, signAndSubmitPayment } from '@/lib/stellar/horizon';
 import { checkMinReceive, executionFailed, trackFunnelEvent } from '@/lib/rate-ranking';
 import type { AnchorRate, ExecuteDrawerStep } from '@/types';
+import {
+  assertSep38Capable,
+  postSep38Quote,
+  onQuoteExpired,
+  QuoteExpiredError,
+} from '@/lib/stellar/sep38';
+import { measureClient } from '@/lib/metrics';
+import { amountBucket, FUNNEL_EVENTS, trackFunnelEvent } from '@/lib/analytics';
+import { stepTimeEstimate } from '@/lib/stellar/step-estimates';
+import { classifyExecuteError, isRetryableExecuteError } from '@/lib/errors/messages';
+import type { AnchorRate, ExecuteDrawerStep, Sep38Quote } from '@/types';
+import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
+import { QuotePill } from '@/components/ui/QuotePill';
 import { KycIframe } from './KycIframe';
+import { ConsentModal } from './ConsentModal';
+import { acceptTerms, hasAcceptedTerms } from '@/lib/consent';
+import { FLAGS } from '@/lib/flags';
 
 // ─── Step definitions ─────────────────────────────────────────────────────────
 
 const STEP_LABELS: Record<ExecuteDrawerStep, string> = {
   idle: 'Ready',
   authenticating: 'Proving wallet ownership to anchor…',
+  quoting: 'Locking in a firm quote…',
   initiating: 'Initiating withdrawal…',
   kyc: 'Complete KYC in popup…',
+  form: 'Complete KYC form…',
   building: 'Building payment transaction…',
   signing: 'Sign transaction in Freighter…',
   done: 'Transaction submitted',
@@ -22,6 +40,9 @@ const STEP_LABELS: Record<ExecuteDrawerStep, string> = {
 };
 
 // ─── Props ────────────────────────────────────────────────────────────────────
+
+// Distance in px a downward swipe must travel before the bottom sheet dismisses.
+const DISMISS_THRESHOLD = 120;
 
 interface ExecuteDrawerProps {
   rate: AnchorRate | null;
@@ -31,7 +52,12 @@ interface ExecuteDrawerProps {
   firmQuote?: unknown;
   onClose: () => void;
   /** Called once the Stellar payment is submitted; closes the drawer and hands tracking data to the page. */
-  onExecuteStarted: (transactionId: string, transferServer: string, jwt: string) => void;
+  onExecuteStarted: (
+    transactionId: string,
+    transferServer: string,
+    jwt: string,
+    anchorHomeDomain: string
+  ) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -45,42 +71,229 @@ export function ExecuteDrawer({
   onClose,
   onExecuteStarted,
 }: ExecuteDrawerProps) {
+  const resetKey = rate ? `${rate.anchorId}:${amount}:${publicKey}` : 'closed';
+
+  return (
+    <ErrorBoundary
+      resetKeys={[resetKey]}
+      fallback={({ resetErrorBoundary }) => (
+        <ExecuteDrawerErrorFallback
+          anchorName={rate?.anchorName}
+          isOpen={rate !== null}
+          onChooseDifferentAnchor={() => {
+            resetErrorBoundary();
+            onClose();
+          }}
+          onRetry={resetErrorBoundary}
+        />
+      )}
+    >
+      <ExecuteDrawerContent
+        rate={rate}
+        amount={amount}
+        publicKey={publicKey}
+        onClose={onClose}
+        onExecuteStarted={onExecuteStarted}
+      />
+    </ErrorBoundary>
+  );
+}
+
+function ExecuteDrawerContent({
+  rate,
+  amount,
+  publicKey,
+  onClose,
+  onExecuteStarted,
+}: ExecuteDrawerProps) {
   const [step, setStep] = useState<ExecuteDrawerStep>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isNonRetryable, setIsNonRetryable] = useState(false);
   const [estimateNote, setEstimateNote] = useState<string | null>(null);
+  const [errorIsRetryable, setErrorIsRetryable] = useState(true);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [kycUrl, setKycUrl] = useState<string | null>(null);
   const [kycOrigin, setKycOrigin] = useState<string | null>(null);
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [showConsent, setShowConsent] = useState(false);
+  const asset = rate ? getCorridorAsset(rate.corridorId) : null;
+
+  // The firm SEP-38 quote locked in for this execution, when the anchor
+  // supports one — drives the expiry countdown shown in the summary panel.
+  const [firmQuote, setFirmQuote] = useState<Sep38Quote | null>(null);
+  // Set by the onQuoteExpired watcher; checked at the next safe checkpoint
+  // (before initiating and before building the payment) so a lapsed quote
+  // surfaces a re-quote prompt instead of silently completing at a stale
+  // price.
+  const quoteExpiredRef = useRef(false);
+  const quoteExpiryCleanupRef = useRef<(() => void) | null>(null);
+
+  // Live downward-drag offset (px) of the mobile bottom sheet while a swipe is in
+  // progress. 0 means the sheet is at rest. Driven by the touch handlers below.
+  const [dragOffset, setDragOffset] = useState(0);
+  const touchStartY = useRef<number | null>(null);
 
   // Holds the resolve/reject for the KYC Promise so KycIframe callbacks can
   // settle it without touching window globals.
   const kycResolveRef = useRef<((transactionId: string) => void) | null>(null);
   const kycRejectRef = useRef<((error: Error) => void) | null>(null);
 
-  const isOpen = rate !== null;
+  // Abort controller for in-flight network requests — cancelled on unmount.
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Handle escape key — prompt confirmation when a flow is in progress.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      quoteExpiryCleanupRef.current?.();
+    };
+  }, []);
+
+  const isOpen = rate !== null;
+  const openedForRef = useRef<string | null>(null);
+
+  // Fire when the drawer opens for a specific anchor + amount (once per open).
+  useEffect(() => {
+    if (!rate) {
+      openedForRef.current = null;
+      return;
+    }
+    const openKey = `${rate.anchorId}:${rate.corridorId}:${amount}`;
+    if (openedForRef.current === openKey) return;
+    openedForRef.current = openKey;
+    trackFunnelEvent(FUNNEL_EVENTS.executeDrawerOpened, {
+      corridor: rate.corridorId,
+      anchor: rate.anchorId,
+      amount_bucket: amountBucket(amount),
+    });
+  }, [rate, amount]);
+
+  // Focus trap — keeps Tab/Shift+Tab cycling within the open dialog (or the
+  // confirmation dialog on top of it, when shown) and restores focus to
+  // whatever triggered the drawer once it's fully closed.
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const confirmDialogRef = useRef<HTMLDivElement>(null);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+    return () => {
+      previouslyFocusedRef.current?.focus();
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const container = showConfirmDialog ? confirmDialogRef.current : drawerRef.current;
+
+    const getFocusable = () =>
+      container
+        ? Array.from(
+            container.querySelectorAll<HTMLElement>(
+              'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+            )
+          )
+        : [];
+
+    getFocusable()[0]?.focus();
+
+    const handleTab = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab') return;
+      const focusable = getFocusable();
+      if (focusable.length === 0) return;
+
+      const first = focusable[0]!;
+      const last = focusable[focusable.length - 1]!;
+      const active = document.activeElement;
+
+      if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', handleTab);
+    return () => window.removeEventListener('keydown', handleTab);
+  }, [isOpen, showConfirmDialog, step]);
+
+  // Handle escape key — close immediately when it's safe to do so (idle/
+  // error), otherwise do nothing.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && isOpen && !['idle', 'done', 'error'].includes(step)) {
-        setShowConfirmDialog(true);
+      if (event.key !== 'Escape' || !isOpen) return;
+      if (['idle', 'error'].includes(step)) {
+        onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, step]);
+  }, [isOpen, step, onClose]);
+
+  // Lock background scroll while the drawer is open. Pinning <body> with
+  // position:fixed (rather than overflow:hidden alone) is what makes the lock
+  // stick on iOS Safari, where touch scrolling otherwise leaks through.
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const { body } = document;
+    const scrollY = window.scrollY;
+    const prev = {
+      position: body.style.position,
+      top: body.style.top,
+      width: body.style.width,
+      overflow: body.style.overflow,
+    };
+
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+
+    return () => {
+      body.style.position = prev.position;
+      body.style.top = prev.top;
+      body.style.width = prev.width;
+      body.style.overflow = prev.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [isOpen]);
 
   async function handleExecute() {
     if (!rate) return;
+
+    // First execution for this wallet requires acknowledging the Terms (#741).
+    // Placed here rather than on the button so any other caller of
+    // handleExecute — the error-state Retry, for one — is gated too.
+    if (!hasAcceptedTerms(publicKey)) {
+      setShowConsent(true);
+      return;
+    }
+
+    abortRef.current?.abort();
+    abortRef.current = new AbortController();
+    const { signal } = abortRef.current;
+
+    const funnelProps = {
+      corridor: rate.corridorId,
+      anchor: rate.anchorId,
+      amount_bucket: amountBucket(amount),
+    };
+    trackFunnelEvent(FUNNEL_EVENTS.executionConfirmed, funnelProps);
 
     setStep('authenticating');
     setErrorMsg(null);
     setIsNonRetryable(false);
     setEstimateNote(null);
     setTxHash(null);
+    setFirmQuote(null);
+    quoteExpiredRef.current = false;
+    quoteExpiryCleanupRef.current?.();
+    quoteExpiryCleanupRef.current = null;
 
     try {
       // Step 0 — Resolve anchor capabilities
@@ -89,15 +302,56 @@ export function ExecuteDrawer({
       // Step 1 — SEP-10 auth
       const auth = await authenticate(anchor, publicKey);
 
+      // Branch on anchor capabilities: SEP-24 → hosted iframe; SEP-6 → programmatic form
+      if (!anchor.capabilities.sep24 && anchor.capabilities.sep12) {
+        // SEP-6 path — show programmatic form placeholder (full form flow is a future PR)
+        setStep('form');
+        return;
+      }
+
+      // Step 1.5 — Lock in a firm SEP-38 quote, when the anchor advertises
+      // one, so the withdrawal executes at a binding price instead of the
+      // indicative rate shown in the table. Anchors without SEP-38 support
+      // fall through to the indicative flow unchanged.
+      let quoteId: string | undefined;
+      let quoteServer: string | null = null;
+      try {
+        quoteServer = assertSep38Capable(anchor);
+      } catch {
+        quoteServer = null;
+      }
+
+      if (quoteServer) {
+        setStep('quoting');
+        const buyAssetCode = rate.corridorId.split('-')[1]?.toUpperCase();
+        const quote = await postSep38Quote(quoteServer, auth.jwt, {
+          sell_asset: sep38AssetId(asset!),
+          buy_asset: `iso4217:${buyAssetCode}`,
+          sell_amount: amount,
+          context: 'sep24',
+        });
+        setFirmQuote(quote);
+        quoteId = quote.id;
+        quoteExpiryCleanupRef.current = onQuoteExpired(quote, () => {
+          quoteExpiredRef.current = true;
+        });
+      }
+
       // Step 2 — Initiate SEP-24 withdraw
       setStep('initiating');
-      const withdrawResp = await initiateWithdraw(anchor, {
-        assetCode: anchor.assetCode,
-        assetIssuer: anchor.assetIssuer,
-        amount,
-        account: publicKey,
-        jwt: auth.jwt,
-      });
+      if (quoteExpiredRef.current) throw new QuoteExpiredError();
+      const withdrawResp = await initiateWithdraw(
+        anchor,
+        {
+          assetCode: asset!.code,
+          assetIssuer: asset!.issuer ?? '',
+          amount,
+          account: publicKey,
+          jwt: auth.jwt,
+          ...(quoteId ? { quoteId } : {}),
+        },
+        signal
+      );
 
       // Step 3 — KYC iframe
       setStep('kyc');
@@ -114,6 +368,11 @@ export function ExecuteDrawer({
       // Clear refs once the Promise has settled.
       kycResolveRef.current = null;
       kycRejectRef.current = null;
+
+      // KYC can take anywhere from seconds to minutes — re-check the firm
+      // quote here rather than silently building a payment against a price
+      // the anchor may no longer honor.
+      if (quoteExpiredRef.current) throw new QuoteExpiredError();
 
       // Step 4 — Fetch transaction record
       setStep('building');
@@ -146,6 +405,12 @@ export function ExecuteDrawer({
           return;
         }
       }
+      const record = await getWithdrawTransactionRecord(
+        transferServer,
+        transactionId,
+        auth.jwt,
+        signal
+      );
 
       // Step 5 — Build payment
       const tx = await buildWithdrawPayment({
@@ -154,21 +419,42 @@ export function ExecuteDrawer({
         amount,
         memo: record.memo,
         memoType: record.memoType,
-        assetCode: anchor.assetCode,
-        assetIssuer: anchor.assetIssuer,
+        assetCode: asset!.code,
+        assetIssuer: asset!.issuer ?? '',
       });
 
       // Step 6 — Sign and submit
       setStep('signing');
-      const result = await signAndSubmitPayment(tx);
+      const result = await measureClient('tx_submit_latency', () => signAndSubmitPayment(tx), {
+        anchorId: anchor.homeDomain,
+      });
       setTxHash(result.hash ?? null);
       setStep('done');
+      trackFunnelEvent(FUNNEL_EVENTS.executionCompleted, funnelProps);
+      quoteExpiryCleanupRef.current?.();
+      quoteExpiryCleanupRef.current = null;
 
       // Hand tracking data to the page, then close so StatusTracker owns the viewport.
-      onExecuteStarted(transactionId, transferServer, auth.jwt);
+      onExecuteStarted(transactionId, transferServer, auth.jwt, anchor.homeDomain);
       onClose();
     } catch (err) {
+      // Freighter is on the wrong network — surface the dedicated
+      // "switch network" guidance without retrying the sign.
+      if (err instanceof NetworkMismatchError) {
+        setErrorMsg(err.message);
+        setErrorIsRetryable(false);
+        setStep('error');
+        trackFunnelEvent(FUNNEL_EVENTS.executionFailed, {
+          ...funnelProps,
+          error_class: 'network_mismatch',
+        });
+        return;
+      }
+
       const message = err instanceof Error ? err.message : 'Unknown error';
+
+      // Ignore aborted requests (component unmounted mid-flow).
+      if ((err as Error).name === 'AbortError') return;
 
       // Determine if it's a "User Rejected" case to avoid noisy error UI.
       if (message.includes('User rejected')) {
@@ -176,8 +462,13 @@ export function ExecuteDrawer({
         return;
       }
 
-      setErrorMsg(message);
+      setErrorMsg(classifyExecuteError(err));
+      setErrorIsRetryable(isRetryableExecuteError(err));
       setStep('error');
+      trackFunnelEvent(FUNNEL_EVENTS.executionFailed, {
+        ...funnelProps,
+        error_class: 'execute_error',
+      });
     } finally {
       // Ensure refs are cleaned up even on unexpected throws.
       kycResolveRef.current = null;
@@ -185,7 +476,42 @@ export function ExecuteDrawer({
     }
   }
 
-  const isRunning = !['idle', 'done', 'error'].includes(step);
+  const isRunning = !['idle', 'done', 'error', 'form'].includes(step);
+
+  // ─── Bottom-sheet swipe-to-dismiss (mobile only) ────────────────────────────
+  // CSS-first: these handlers only feed a translateY offset; app/globals.css
+  // owns the snap-back animation and disables the transition mid-drag. The grab
+  // handle is hidden at ≥1024px (lg:hidden), so this never fires on the desktop
+  // centered-modal layout.
+  const handleSwipeStart = (event: ReactTouchEvent) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    touchStartY.current = touch.clientY;
+  };
+
+  const handleSwipeMove = (event: ReactTouchEvent) => {
+    if (touchStartY.current === null) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const delta = touch.clientY - touchStartY.current;
+    setDragOffset(delta > 0 ? delta : 0); // only track downward drags
+  };
+
+  const handleSwipeEnd = () => {
+    if (touchStartY.current === null) return;
+    const dismissed = dragOffset > DISMISS_THRESHOLD;
+    touchStartY.current = null;
+    setDragOffset(0); // release: CSS transitions the sheet back to rest
+
+    if (!dismissed) return;
+    // Mirror the Escape/backdrop behaviour: confirm before tearing down an
+    // in-flight flow, otherwise just close.
+    if (isRunning) {
+      setShowConfirmDialog(true);
+    } else {
+      onClose();
+    }
+  };
 
   const handleKycComplete = (transactionId: string) => {
     kycResolveRef.current?.(transactionId);
@@ -199,6 +525,13 @@ export function ExecuteDrawer({
     kycRejectRef.current?.(error);
   };
 
+  const handleConsentAccept = () => {
+    acceptTerms(publicKey);
+    setShowConsent(false);
+    // Re-enter execution now that consent is recorded.
+    void handleExecute();
+  };
+
   const handleConfirmClose = () => {
     setShowConfirmDialog(false);
     kycRejectRef.current?.(new Error('User cancelled the transaction'));
@@ -209,39 +542,67 @@ export function ExecuteDrawer({
     setShowConfirmDialog(false);
   };
 
+  const handleStartOver = () => {
+    setErrorMsg(null);
+    setStep('idle');
+  };
+
   return (
     <>
-      {/* Backdrop */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/40"
-          onClick={isRunning ? undefined : onClose}
-          aria-hidden="true"
-        />
-      )}
+      {/* Backdrop — always mounted so opening/closing gets a real opacity
+          transition rather than an abrupt mount/unmount. */}
+      <div
+        className={`fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity duration-200 motion-reduce:transition-none ${
+          isOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+        onClick={isRunning ? undefined : onClose}
+        aria-hidden="true"
+      />
 
       {/* Drawer */}
       <div
+        ref={drawerRef}
         role="dialog"
         aria-modal="true"
         aria-label="Execute off-ramp"
-        className={`fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl bg-white shadow-2xl transition-transform duration-300 dark:bg-gray-900 sm:bottom-auto sm:left-auto sm:right-8 sm:top-1/2 sm:w-96 sm:-translate-y-1/2 sm:rounded-2xl ${
-          isOpen ? 'translate-y-0' : 'translate-y-full sm:translate-y-full'
+        data-dragging={dragOffset > 0 ? 'true' : undefined}
+        style={dragOffset > 0 ? { transform: `translateY(${dragOffset}px)` } : undefined}
+        className={`bottom-sheet fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl bg-bg-subtle transition-transform duration-300 lg:bottom-auto lg:left-1/2 lg:right-auto lg:top-1/2 lg:w-full lg:max-w-[480px] lg:-translate-x-1/2 lg:-translate-y-1/2 lg:rounded-2xl ${
+          isOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-full'
         }`}
       >
-        <div className="p-6">
+        {/* Grab handle — swipe down to dismiss. Mobile bottom sheet only. */}
+        <div
+          className="bottom-sheet-handle flex justify-center pt-3 lg:hidden"
+          onTouchStart={handleSwipeStart}
+          onTouchMove={handleSwipeMove}
+          onTouchEnd={handleSwipeEnd}
+        >
+          <span
+            aria-hidden="true"
+            className="h-1.5 w-10 rounded-full bg-border dark:bg-bg-sunken"
+          />
+        </div>
+
+        <div className="px-6 pb-6 pt-4 sm:p-6">
           {/* Header */}
           <div className="mb-5 flex items-center justify-between">
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-white">
+            <h2 className="text-lg font-semibold text-primary-text">
               Off-ramp via {rate?.anchorName ?? ''}
             </h2>
             <button
               onClick={onClose}
               disabled={isRunning}
               aria-label="Close"
-              className="rounded-lg p-1 text-gray-400 hover:text-gray-600 disabled:opacity-40 dark:hover:text-gray-200"
+              className="rounded-lg p-1 text-secondary-text hover:text-secondary-text disabled:opacity-40 dark:hover:text-secondary-text"
             >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -254,23 +615,41 @@ export function ExecuteDrawer({
 
           {/* Summary */}
           {rate && (
-            <div className="mb-5 rounded-xl border border-gray-200 p-4 dark:border-gray-700">
+            <div className="mb-5 rounded-xl border border-border p-4">
               <dl className="space-y-2 text-sm">
                 <div className="flex justify-between">
-                  <dt className="text-gray-500">You send</dt>
-                  <dd className="font-medium text-gray-900 dark:text-white">{amount} USDC</dd>
+                  <dt className="text-fg-muted">You send</dt>
+                  <dd className="font-medium text-primary-text">
+                    {amount} {asset?.code}
+                  </dd>
                 </div>
                 <div className="flex justify-between">
-                  <dt className="text-gray-500">Fee</dt>
-                  <dd className="text-gray-700 dark:text-gray-300">{rate.fee} USDC</dd>
+                  <dt className="text-fg-muted">Fee</dt>
+                  <dd className="text-secondary-text">
+                    {rate.fee} {asset?.code}
+                  </dd>
                 </div>
-                <div className="flex justify-between border-t border-gray-100 pt-2 dark:border-gray-700">
-                  <dt className="font-medium text-gray-700 dark:text-gray-300">You receive</dt>
-                  <dd className="font-semibold text-green-600 dark:text-green-400">
+                <div className="flex justify-between border-t border-border pt-2">
+                  <dt className="font-medium text-secondary-text">You receive</dt>
+                  <dd className="font-semibold text-status-up">
                     {(rate.totalReceived ?? 0).toLocaleString()}{' '}
                     {rate.corridorId.split('-')[1]?.toUpperCase()}
                   </dd>
                 </div>
+                {firmQuote && (
+                  <div className="flex items-center justify-between border-t border-border pt-2">
+                    <dt className="text-fg-muted">Price</dt>
+                    <dd>
+                      <QuotePill
+                        source="sep38"
+                        expiresAt={new Date(firmQuote.expires_at)}
+                        onExpire={() => {
+                          quoteExpiredRef.current = true;
+                        }}
+                      />
+                    </dd>
+                  </div>
+                )}
               </dl>
             </div>
           )}
@@ -297,17 +676,26 @@ export function ExecuteDrawer({
 
           {/* Step indicator — hidden during KYC iframe */}
           {step !== 'kyc' && <StepIndicator step={step} />}
+          {/* SEP-6 form placeholder — shown when anchor uses programmatic KYC */}
+          {step === 'form' && (
+            <div className="mb-5 rounded-xl border border-border p-4 text-center">
+              <p className="text-sm text-secondary-text">SEP-6 form flow — coming soon</p>
+            </div>
+          )}
+
+          {/* Step indicator — hidden during KYC iframe and SEP-6 form */}
+          {step !== 'kyc' && step !== 'form' && <StepIndicator step={step} />}
 
           {/* Error message */}
           {step === 'error' && errorMsg && (
-            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
+            <p className="mt-3 rounded-lg bg-bg-sunken px-3 py-2 text-sm text-status-down">
               {errorMsg}
             </p>
           )}
 
           {/* Success — tx hash */}
           {step === 'done' && txHash && (
-            <p className="mt-3 rounded-lg bg-green-50 px-3 py-2 text-xs font-mono text-green-700 dark:bg-green-950/30 dark:text-green-400">
+            <p className="mt-3 rounded-lg bg-accent-subtle px-3 py-2 text-xs font-mono text-status-up">
               {txHash}
             </p>
           )}
@@ -315,18 +703,33 @@ export function ExecuteDrawer({
           {/* CTA — hidden during KYC iframe */}
           {step !== 'kyc' && (
             <div className="mt-5">
-              {step === 'idle' && (
+              {step === 'form' && (
                 <button
-                  onClick={handleExecute}
-                  className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                  onClick={onClose}
+                  className="w-full rounded-xl bg-bg-sunken py-3 text-sm font-semibold text-primary-text transition-colors hover:bg-bg-sunken dark:hover:bg-bg-sunken"
                 >
-                  Start Off-ramp
+                  Continue
                 </button>
+              )}
+              {step === 'idle' && (
+                <div className="flex flex-col items-center">
+                  <button
+                    onClick={handleExecute}
+                    className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-background transition-colors hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+                  >
+                    {FLAGS.INTENT_FLOW ? 'Sign intent' : 'Start Off-ramp'}
+                  </button>
+                  {FLAGS.INTENT_FLOW && (
+                    <p className="mt-2 text-center text-xs text-fg-muted">
+                      One signature, any outcome.
+                    </p>
+                  )}
+                </div>
               )}
               {isRunning && (
                 <button
                   disabled
-                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white opacity-75"
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-accent py-3 text-sm font-semibold text-background opacity-75"
                 >
                   <Spinner />
                   {STEP_LABELS[step]}
@@ -348,11 +751,17 @@ export function ExecuteDrawer({
                     Try Again
                   </button>
                 )
+                <button
+                  onClick={errorIsRetryable ? handleExecute : handleStartOver}
+                  className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-background transition-colors hover:opacity-90"
+                >
+                  {errorIsRetryable ? 'Retry' : 'Start Over'}
+                </button>
               )}
               {step === 'done' && (
                 <button
                   onClick={onClose}
-                  className="w-full rounded-xl bg-gray-100 py-3 text-sm font-semibold text-gray-900 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600"
+                  className="w-full rounded-xl bg-bg-sunken py-3 text-sm font-semibold text-primary-text transition-colors hover:bg-bg-sunken dark:hover:bg-bg-sunken"
                 >
                   Close
                 </button>
@@ -363,27 +772,36 @@ export function ExecuteDrawer({
       </div>
 
       {/* Confirmation Dialog */}
+      <ConsentModal
+        open={showConsent}
+        onAccept={handleConsentAccept}
+        onCancel={() => setShowConsent(false)}
+      />
       {showConfirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="fixed inset-0 bg-black/50" onClick={handleCancelClose} />
-          <div className="relative z-10 mx-4 max-w-sm rounded-lg bg-white p-6 shadow-xl dark:bg-gray-800">
-            <h3 className="mb-2 text-lg font-semibold text-gray-900 dark:text-white">
-              Cancel Off-ramp?
-            </h3>
-            <p className="mb-6 text-sm text-gray-600 dark:text-gray-400">
+          <div
+            ref={confirmDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Cancel off-ramp?"
+            className="relative z-10 mx-4 max-w-sm rounded-lg bg-bg-subtle p-6"
+          >
+            <h3 className="mb-2 text-lg font-semibold text-primary-text">Cancel Off-ramp?</h3>
+            <p className="mb-6 text-sm text-secondary-text">
               Are you sure you want to cancel the off-ramp process? This will close the KYC form and
-              you'll need to start over.
+              you&apos;ll need to start over.
             </p>
             <div className="flex gap-3">
               <button
                 onClick={handleCancelClose}
-                className="flex-1 rounded-lg border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+                className="flex-1 rounded-lg border border-control-border px-4 py-2 text-sm font-medium text-secondary-text transition-colors hover:bg-bg-sunken dark:hover:bg-bg-sunken"
               >
                 Keep Going
               </button>
               <button
                 onClick={handleConfirmClose}
-                className="flex-1 rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2"
+                className="flex-1 rounded-lg bg-status-down px-4 py-2 text-sm font-medium text-background transition-colors hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-status-down focus:ring-offset-2"
               >
                 Cancel Process
               </button>
@@ -395,12 +813,68 @@ export function ExecuteDrawer({
   );
 }
 
+function ExecuteDrawerErrorFallback({
+  anchorName,
+  isOpen,
+  onChooseDifferentAnchor,
+  onRetry,
+}: {
+  anchorName: string | undefined;
+  isOpen: boolean;
+  onChooseDifferentAnchor: () => void;
+  onRetry: () => void;
+}) {
+  return (
+    <>
+      <div
+        className={`fixed inset-0 z-40 bg-black/40 backdrop-blur-sm transition-opacity duration-200 motion-reduce:transition-none ${
+          isOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+        aria-hidden="true"
+      />
+
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Off-ramp error"
+        className={`fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl bg-bg-subtle transition-transform duration-300 lg:bottom-auto lg:left-1/2 lg:right-auto lg:top-1/2 lg:w-full lg:max-w-[480px] lg:-translate-x-1/2 lg:-translate-y-1/2 lg:rounded-2xl ${
+          isOpen ? 'translate-y-0' : 'translate-y-full lg:translate-y-full'
+        }`}
+      >
+        <div className="p-6">
+          <h2 className="text-lg font-semibold text-primary-text">Off-ramp unavailable</h2>
+          <p className="mt-2 text-sm text-secondary-text">
+            We could not render the {anchorName ? `${anchorName} ` : ''}off-ramp flow.
+          </p>
+
+          <div className="mt-5 space-y-3">
+            <button
+              onClick={onRetry}
+              className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-background transition-colors hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2"
+            >
+              Retry
+            </button>
+            <button
+              onClick={onChooseDifferentAnchor}
+              className="w-full rounded-xl bg-bg-sunken py-3 text-sm font-semibold text-primary-text transition-colors hover:bg-bg-sunken dark:hover:bg-bg-sunken"
+            >
+              Choose different anchor
+            </button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 const ORDERED_STEPS: ExecuteDrawerStep[] = [
   'authenticating',
+  'quoting',
   'initiating',
   'kyc',
+  'form',
   'building',
   'signing',
   'done',
@@ -420,12 +894,14 @@ function StepIndicator({ step }: { step: ExecuteDrawerStep }) {
 
         return (
           <li key={s} className="flex items-center gap-2 text-xs">
+            {/* Pending steps stay low-contrast on purpose — inactive controls are
+                exempt from WCAG 1.4.3, and the active step has to stand out (#755). */}
             <span
               className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold
-                ${isComplete ? 'bg-green-500 text-white' : ''}
-                ${isActive ? 'bg-blue-600 text-white animate-pulse' : ''}
-                ${isPending ? 'bg-gray-200 text-gray-400 dark:bg-gray-700' : ''}
-                ${step === 'done' ? 'bg-green-500 text-white' : ''}
+ ${isComplete ? 'bg-status-up text-white' : ''}
+                ${isActive ? 'bg-accent text-background animate-pulse' : ''}
+                ${isPending ? 'bg-bg-sunken text-fg-muted ' : ''}
+                ${step === 'done' ? 'bg-status-up text-white' : ''}
               `}
             >
               {isComplete || step === 'done' ? '✓' : thisIdx + 1}
@@ -433,13 +909,16 @@ function StepIndicator({ step }: { step: ExecuteDrawerStep }) {
             <span
               className={
                 isActive
-                  ? 'font-medium text-blue-600 dark:text-blue-400'
+                  ? 'font-medium text-accent'
                   : isComplete || step === 'done'
-                    ? 'text-gray-500 line-through dark:text-gray-400'
-                    : 'text-gray-400 dark:text-gray-500'
+                    ? 'text-fg-muted line-through dark:text-fg-muted'
+                    : 'text-secondary-text'
               }
             >
               {STEP_LABELS[s]}
+              {stepTimeEstimate(s) && (
+                <span className="text-secondary-text"> ({stepTimeEstimate(s)})</span>
+              )}
             </span>
           </li>
         );
@@ -451,6 +930,7 @@ function StepIndicator({ step }: { step: ExecuteDrawerStep }) {
 function Spinner() {
   return (
     <svg
+      aria-hidden="true"
       className="h-4 w-4 animate-spin"
       xmlns="http://www.w3.org/2000/svg"
       fill="none"

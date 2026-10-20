@@ -4,6 +4,8 @@
 > turn this on locally?", the answer is yes — CI will catch it eventually,
 > and fixing it at write-time is cheaper than fixing it at review-time.
 
+**Last reviewed:** 2026-08-26
+
 ## Philosophy
 
 **Defects are cheapest at the keystroke.** Every gate below catches a class
@@ -26,19 +28,19 @@ Two guiding principles:
 
 Every PR runs, in order of earliest failure:
 
-| Gate | Command | Fails on |
-|------|---------|----------|
-| **Prettier** | `npm run format:check` | Any unformatted diff. Rerun `npm run format` to fix. |
-| **ESLint (zero warnings)** | `npm run lint` | Any `no-explicit-any`, `no-unused-vars`, `no-console`, Next.js core-web-vital rule. |
-| **TypeScript** | `npm run typecheck` | Any type error under the strict flag set below. |
-| **Vitest** | `npm run test` | Any failing unit test. Coverage uploaded to Codecov. |
-| **Next build** | `npm run build` | Build error, missing env var at build-time, circular import. |
-| **Commitlint** | workflow `commitlint` | Commit that does not match `<type>[(scope)]: <subject>`. |
-| **PR title** | workflow `pr-title` | PR title not following Conventional Commits. |
-| **Dependency review** | workflow `dependency-review` | New dep with GPL / AGPL licence or CVE ≥ moderate. |
-| **Bundle size** | workflow `bundle-size` | > 10 kB total JS growth vs. base branch without a size label. |
-| **Lighthouse** | workflow `lighthouse` | Posted as comment; informational unless performance degrades sharply. |
-| **CodeQL** | workflow `codeql` | Security-extended + security-and-quality queries. |
+| Gate                       | Command                      | Fails on                                                                            |
+| -------------------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
+| **Prettier**               | `npm run format:check`       | Any unformatted diff. Rerun `npm run format` to fix.                                |
+| **ESLint (zero warnings)** | `npm run lint`               | Any `no-explicit-any`, `no-unused-vars`, `no-console`, Next.js core-web-vital rule. |
+| **TypeScript**             | `npm run typecheck`          | Any type error under the strict flag set below.                                     |
+| **Vitest**                 | `npm run test`               | Any failing unit test. Coverage uploaded to Codecov.                                |
+| **Next build**             | `npm run build`              | Build error, missing env var at build-time, circular import.                        |
+| **Commitlint**             | workflow `commitlint`        | Commit that does not match `<type>[(scope)]: <subject>`.                            |
+| **PR title**               | workflow `pr-title`          | PR title not following Conventional Commits.                                        |
+| **Dependency review**      | workflow `dependency-review` | New dep with GPL / AGPL licence or CVE ≥ moderate.                                  |
+| **Bundle size**            | workflow `bundle-size`       | > 10 kB total JS growth vs. base branch without a size label.                       |
+| **Lighthouse**             | workflow `lighthouse`        | Posted as comment; informational unless performance degrades sharply.               |
+| **CodeQL**                 | workflow `codeql`            | Security-extended + security-and-quality queries.                                   |
 
 Run the full local equivalent with `npm run test:release`.
 
@@ -48,13 +50,13 @@ Run the full local equivalent with `npm run test:release`.
 
 Enabled in `tsconfig.json`:
 
-| Flag | Catches |
-|------|---------|
-| `strict` | All the standard strict-mode checks (`strictNullChecks`, `noImplicitAny`, …). |
-| `noUncheckedIndexedAccess` | `arr[i]` is inferred as `T \| undefined`, forcing explicit null checks on index access. |
-| `noImplicitOverride` | Subclass methods must use `override`, preventing accidental parent-method shadowing. |
-| `exactOptionalPropertyTypes` | `{ x?: T }` and `{ x?: T \| undefined }` are distinct. Prevents "undefined leaked through an optional". |
-| `noFallthroughCasesInSwitch` | Every non-empty `case` ends in a terminator. |
+| Flag                               | Catches                                                                                                    |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `strict`                           | All the standard strict-mode checks (`strictNullChecks`, `noImplicitAny`, …).                              |
+| `noUncheckedIndexedAccess`         | `arr[i]` is inferred as `T \| undefined`, forcing explicit null checks on index access.                    |
+| `noImplicitOverride`               | Subclass methods must use `override`, preventing accidental parent-method shadowing.                       |
+| `exactOptionalPropertyTypes`       | `{ x?: T }` and `{ x?: T \| undefined }` are distinct. Prevents "undefined leaked through an optional".    |
+| `noFallthroughCasesInSwitch`       | Every non-empty `case` ends in a terminator.                                                               |
 | `forceConsistentCasingInFileNames` | Prevents import-path case drift between macOS/Windows (case-insensitive FS) and Linux CI (case-sensitive). |
 
 These are deliberately opinionated. If a flag blocks you, prefer adding
@@ -69,7 +71,7 @@ Declared in `eslint.config.mjs`. Notable non-defaults:
 - `@typescript-eslint/no-explicit-any`: **error**. `any` defeats the point
   of TypeScript; use `unknown` at system boundaries and narrow.
 - `no-console`: **warn** (which CI treats as error under `--max-warnings 0`).
-  Use `lib/telemetry` / structured logs, not raw `console.log`.
+  Use `lib/logger` / structured logs, not raw `console.log`.
 - `no-unused-vars`: **error**. Unused imports and dead bindings are pure
   cost.
 - Next.js `core-web-vitals`: performance rules around `<Image>`, `<Link>`,
@@ -96,16 +98,19 @@ chore(deps): bump @stellar/stellar-sdk to 14.7.0
 Accepted types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
 `build`, `ci`, `chore`, `revert`.
 
-Scopes map to module labels — keep them aligned with
-[`.github/labels.yml`](../.github/labels.yml). Empty scope is allowed for
-repo-wide changes (`chore: reshuffle root`).
+Scopes are validated by commitlint against a fixed enum (see
+`commitlint.config.mjs`). They identify the codebase module touched by the
+change; they are not GitHub labels. Empty scope is allowed for repo-wide
+changes (`chore: reshuffle root`).
 
 ### Pre-commit hooks
 
 `.husky/pre-commit` runs `lint-staged` against the staged files only, so
 the hook stays under ~2 seconds on a typical change. `.husky/commit-msg`
-runs `commitlint`. Neither hook runs the full typecheck — that is CI's
-job, not the contributor's.
+runs `commitlint`. `.husky/pre-push` runs format check, lint, typecheck,
+and tests — mirroring CI — so typecheck failures are caught before push.
+Only the fast pre-commit path skips typecheck; it is left to pre-push
+and CI.
 
 Hooks are installed via `npm install` (the `prepare` script). If they do
 not fire, rerun `npm install` or `npx husky install`.
@@ -122,8 +127,8 @@ Repo settings → **Branches → main**:
   - `check (node 20)`
   - `check (node 22)`
   - `build (node 20)`
-  - `codeql-analysis`
-  - `pr-title`
+  - `Analyze (javascript-typescript)` (CodeQL)
+  - `lint-pr-title`
   - `commitlint`
   - `dependency-review`
 - Require branches to be **up to date** before merging.

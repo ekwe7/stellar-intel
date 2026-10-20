@@ -1,10 +1,13 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { ArrowDownLeft } from 'lucide-react';
+import { ArrowDownLeft, BarChart3 } from 'lucide-react';
 import { clsx } from 'clsx';
 
-const TAB_LINKS = [{ href: '/offramp', label: 'Off-ramp', icon: ArrowDownLeft }];
+const TAB_LINKS = [
+  { href: '/offramp', label: 'Off-ramp', icon: ArrowDownLeft },
+  { href: '/anchors', label: 'Anchors', icon: BarChart3 },
+];
 
 export function BottomNav() {
   const pathname = usePathname();
@@ -12,7 +15,8 @@ export function BottomNav() {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center pb-5 md:hidden">
       <nav
-        className="flex items-center gap-1 rounded-2xl border border-border bg-background/80 px-2 py-2 shadow-lg shadow-black/10 backdrop-blur-xl dark:shadow-black/40"
+        aria-label="Bottom tab navigation"
+        className="flex items-center gap-1 rounded-2xl border border-border bg-background/80 px-2 py-2 shadow-black/10 backdrop-blur-xl dark:shadow-black/40"
         style={{
           boxShadow: '0 8px 32px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.08)',
         }}

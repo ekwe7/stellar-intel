@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: 'npm'
     directory: '/'
     schedule:
-      interval: 'weekly'
+      interval: 'monthly'
       day: 'monday'
       time: '06:00'
       timezone: 'Etc/UTC'
@@ -16,7 +16,6 @@ updates:
     commit-message:
       prefix: 'chore(deps)'
       prefix-development: 'chore(deps-dev)'
-      include: 'scope'
     groups:
       next-react:
         patterns:
@@ -47,11 +46,28 @@ updates:
       # Allow lock-step manual bumps on Tailwind v4; it is under active change.
       - dependency-name: 'tailwindcss'
         update-types: ['version-update:semver-major']
+      # typescript-eslint pins `typescript@>=4.8.4 <6.1.0`, so a TypeScript major
+      # cannot install alongside the lint toolchain. Grouped into `tooling`, it
+      # takes the other eleven packages down with it (ERESOLVE, #1203). Bump it
+      # by hand once typescript-eslint widens the peer range.
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      # vitest 5 and msw 3 need a test migration (jest-dom typings, msw's
+      # onUnhandledRequest -> onUnhandledFrame, stricter unhandled-request
+      # handling in the leaderboard and Cowrie specs, the ExecuteDrawer Escape
+      # test). Grouped into `tooling`, they hold the other updates hostage. Bump
+      # them by hand in a dedicated PR.
+      - dependency-name: 'vitest'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@vitest/*'
+        update-types: ['version-update:semver-major']
+      - dependency-name: 'msw'
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: 'github-actions'
     directory: '/'
     schedule:
-      interval: 'weekly'
+      interval: 'monthly'
       day: 'monday'
     open-pull-requests-limit: 5
     labels:
@@ -60,15 +76,6 @@ updates:
     commit-message:
       prefix: 'ci(deps)'
 
-  # Placeholder for the Soroban contract crate set. Harmless if the directory
-  # does not yet exist; Dependabot skips missing manifests.
-  - package-ecosystem: 'cargo'
-    directory: '/contracts'
-    schedule:
-      interval: 'weekly'
-    open-pull-requests-limit: 3
-    labels:
-      - 'dependencies'
-      - 'module/oracle'
-    commit-message:
-      prefix: 'chore(deps-cargo)'
+  # NOTE: A 'cargo' ecosystem for '/contracts' (Soroban crates) was removed.
+  # Dependabot errors ("Cargo.toml not found"), not silently skips, when the
+  # manifest is absent. Re-add this block once /contracts/Cargo.toml exists.

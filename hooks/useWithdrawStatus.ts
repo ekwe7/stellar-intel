@@ -1,72 +1,170 @@
-import useSWR from 'swr'
-import type { Sep24Transaction, WithdrawStatusValue } from '@/types'
+import { useCallback, useEffect, useRef, useState } from 'react';
+import useSWR from 'swr';
+import { TERMINAL_STATES, getSep24Transaction } from '@/lib/stellar/sep24';
+import type { Sep24Transaction, WithdrawStatusValue } from '@/types';
+import type { OutcomeStatus } from '@/types/reputation';
 
-const TERMINAL_STATES: WithdrawStatusValue[] = ['completed', 'error', 'refunded', 'no_market', 'too_small', 'too_large']
+/**
+ * Context the page supplies so a terminal outcome can be logged (#129/#220).
+ *
+ * The append route only accepts signed outcomes: `signature` is the sender's
+ * Freighter signature over `intentHash` (see `lib/intent/sign.ts`) and
+ * `publicKey` the account that produced it. Both are public values — no key
+ * material is ever part of this context.
+ */
+export interface OutcomeAppendContext {
+  intentHash: string;
+  anchorId: string;
+  corridor: string;
+  quotedRate: string;
+  quotedAmount: string;
+  publicKey: string;
+  signature: string;
+}
 
-async function fetcher([transferServer, transactionId, jwt]: [string, string, string]): Promise<Sep24Transaction> {
-  const res = await fetch(`${transferServer}/transaction?id=${transactionId}`, {
-    headers: { Authorization: `Bearer ${jwt}` },
-  })
-
-  if (!res.ok) {
-    throw new Error(`Status poll failed: HTTP ${res.status}`)
+function outcomeFromStatus(status: WithdrawStatusValue): OutcomeStatus {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'refunded':
+      return 'refunded';
+    case 'expired':
+      return 'expired';
+    default:
+      return 'error';
   }
+}
 
-  const data = (await res.json()) as { transaction?: Record<string, unknown> }
-  const tx = data.transaction ?? {}
+export const WITHDRAW_POLL_INITIAL_MS = 2_000;
+export const WITHDRAW_POLL_MAX_MS = 30_000;
+export const WITHDRAW_POLL_MULTIPLIER = 1.5;
 
-  return {
-    id: String(tx['id'] ?? transactionId),
-    status: (tx['status'] as WithdrawStatusValue) ?? 'incomplete',
-    amountIn: tx['amount_in'] as string | undefined,
-    amountInAsset: tx['amount_in_asset'] as string | undefined,
-    amountOut: tx['amount_out'] as string | undefined,
-    amountOutAsset: tx['amount_out_asset'] as string | undefined,
-    amountFee: tx['amount_fee'] as string | undefined,
-    updatedAt: new Date(),
-    stellarTransactionId: tx['stellar_transaction_id'] as string | undefined,
-    externalTransactionId: tx['external_transaction_id'] as string | undefined,
-    refunds: tx['refunds'] as Sep24Transaction['refunds'],
-  }
+/** Next poll delay after a successful fetch with unchanged status. O(1) time, O(1) space. */
+export function computeNextWithdrawPollIntervalMs(currentMs: number): number {
+  return Math.min(Math.round(currentMs * WITHDRAW_POLL_MULTIPLIER), WITHDRAW_POLL_MAX_MS);
+}
+
+async function fetchTransaction(
+  [transferServer, transactionId, jwt]: [string, string, string],
+  signal?: AbortSignal
+): Promise<Sep24Transaction> {
+  return getSep24Transaction(transferServer, transactionId, jwt, signal);
 }
 
 export interface UseWithdrawStatusResult {
-  status: WithdrawStatusValue | undefined
-  amountIn: string | undefined
-  amountInAsset: string | undefined
-  amountOut: string | undefined
-  amountOutAsset: string | undefined
-  amountFee: string | undefined
-  stellarTransactionId: string | undefined
-  externalTransactionId: string | undefined
-  refunds: Sep24Transaction['refunds'] | undefined
-  updatedAt: Date | undefined
-  isLoading: boolean
-  error: string | undefined
+  status: WithdrawStatusValue | undefined;
+  amountIn: string | undefined;
+  amountInAsset: string | undefined;
+  amountOut: string | undefined;
+  amountOutAsset: string | undefined;
+  amountFee: string | undefined;
+  stellarTransactionId: string | undefined;
+  externalTransactionId: string | undefined;
+  refunds: Sep24Transaction['refunds'] | undefined;
+  updatedAt: Date | undefined;
+  isLoading: boolean;
+  error: string | undefined;
+  /** Number of successful polls so far for the current transactionId. Resets to 0 on a new key. */
+  attemptCount: number;
 }
 
 /**
- * Polls the anchor's SEP-24 transaction endpoint every 5 seconds.
- * Polling stops automatically when the transaction reaches a terminal state.
- * Fetching is disabled when any parameter is null.
+ * Polls the anchor SEP-24 /transaction endpoint with exponential backoff
+ * (2s -> x1.5 -> cap 30s). Resets to 2s on status change; stops on terminal states.
  */
 export function useWithdrawStatus(
   transferServer: string | null,
   transactionId: string | null,
-  jwt: string | null
+  jwt: string | null,
+  outcomeContext?: OutcomeAppendContext,
+  _protocol: 'sep24' | 'sep6' = 'sep24'
 ): UseWithdrawStatusResult {
+  const pollIntervalMsRef = useRef(WITHDRAW_POLL_INITIAL_MS);
+  // Mirrored into state so SWR is handed a plain number it re-arms on: passing
+  // `refreshInterval` as a function stopped the poll dead after the first
+  // response (measured: two requests, then silence), which meant a withdrawal
+  // could reach `completed` without this page ever showing it.
+  const [pollIntervalMs, setPollIntervalMs] = useState(WITHDRAW_POLL_INITIAL_MS);
+  const lastStatusRef = useRef<WithdrawStatusValue | undefined>(undefined);
+  const abortRef = useRef<AbortController | null>(null);
+  const appendedRef = useRef(false);
+  const startMsRef = useRef(Date.now());
+  const [attemptCount, setAttemptCount] = useState(0);
+
   const key =
     transferServer && transactionId && jwt
       ? ([transferServer, transactionId, jwt] as [string, string, string])
-      : null
+      : null;
+
+  const applyPollInterval = useCallback((ms: number) => {
+    pollIntervalMsRef.current = ms;
+    setPollIntervalMs(ms);
+  }, []);
+
+  useEffect(() => {
+    pollIntervalMsRef.current = WITHDRAW_POLL_INITIAL_MS;
+    setPollIntervalMs(WITHDRAW_POLL_INITIAL_MS);
+    lastStatusRef.current = undefined;
+    abortRef.current = new AbortController();
+    appendedRef.current = false;
+    startMsRef.current = Date.now();
+    setAttemptCount(0);
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, [transferServer, transactionId, jwt]);
+
+  const fetcher = useCallback(
+    (swrKey: [string, string, string]) => fetchTransaction(swrKey, abortRef.current?.signal),
+    []
+  );
 
   const { data, error, isLoading } = useSWR<Sep24Transaction, Error>(key, fetcher, {
-    refreshInterval: (latestData: Sep24Transaction | undefined) => {
-      if (!latestData) return 5_000
-      return TERMINAL_STATES.includes(latestData.status) ? 0 : 5_000
+    refreshInterval: pollIntervalMs,
+    onSuccess(data) {
+      setAttemptCount((c) => c + 1);
+      // 0 stops the poll, which is what a terminal state should do.
+      if (TERMINAL_STATES.has(data.status)) {
+        applyPollInterval(0);
+        return;
+      }
+      if (lastStatusRef.current !== data.status) {
+        lastStatusRef.current = data.status;
+        applyPollInterval(WITHDRAW_POLL_INITIAL_MS);
+        return;
+      }
+      applyPollInterval(computeNextWithdrawPollIntervalMs(pollIntervalMsRef.current));
     },
     revalidateOnFocus: false,
-  })
+  });
+
+  // ─── Append-on-terminal (#129 / #220) ────────────────────────────────────────
+  // When the poll first reaches a terminal state, POST exactly one outcome row
+  // to the server-side write path. The ref guard ensures one row per intent even
+  // across re-renders and repeated terminal polls.
+  const status = data?.status;
+  useEffect(() => {
+    if (!status || !outcomeContext || appendedRef.current) return;
+    if (!TERMINAL_STATES.has(status)) return;
+    appendedRef.current = true;
+
+    const settleSeconds = Math.max(0, Math.round((Date.now() - startMsRef.current) / 1000));
+    void fetch('/api/reputation/append', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...outcomeContext,
+        outcome: outcomeFromStatus(status),
+        deliveredAmount: data?.amountOut ?? null,
+        settleSeconds,
+        stellarTransactionId: data?.stellarTransactionId ?? null,
+      }),
+      keepalive: true,
+    }).catch(() => {
+      // Best-effort: a failed append must not disrupt the user's status view.
+    });
+  }, [status, outcomeContext, data?.amountOut, data?.stellarTransactionId]);
 
   return {
     status: data?.status,
@@ -81,5 +179,6 @@ export function useWithdrawStatus(
     updatedAt: data?.updatedAt,
     isLoading,
     error: error?.message,
-  }
+    attemptCount,
+  };
 }

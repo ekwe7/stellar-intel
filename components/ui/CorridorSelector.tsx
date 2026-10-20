@@ -1,5 +1,6 @@
-'use client'
-import { CORRIDORS } from '@/constants/anchors'
+'use client';
+import { VISIBLE_CORRIDORS } from '@/constants/anchors';
+import { getAnchorsByCorridorId } from '@/lib/stellar/anchors';
 
 const COUNTRY_FLAGS: Record<string, string> = {
   NG: '🇳🇬',
@@ -9,34 +10,56 @@ const COUNTRY_FLAGS: Record<string, string> = {
   BR: '🇧🇷',
   AR: '🇦🇷',
   PE: '🇵🇪',
-}
+  DE: '🇩🇪',
+  CL: '🇨🇱',
+  DZ: '🇩🇿',
+  US: '🇺🇸',
+};
+
+// Only show corridors that are visible to the app and still served by at least
+// one healthy, transfer-capable anchor.
+const SELECTABLE_CORRIDORS = VISIBLE_CORRIDORS.filter(
+  (c) => getAnchorsByCorridorId(c.id).length > 0
+);
 
 interface CorridorSelectorProps {
-  value: string
-  onChange: (corridorId: string) => void
+  value: string;
+  onChange: (corridorId: string) => void;
+  /** When set, only corridors whose source asset matches are listed. */
+  assetCode?: string;
 }
 
 /**
  * Dropdown for selecting an off-ramp corridor.
  * Defaults to usdc-ngn (Nigeria) as the first option.
+ * Excludes corridors served only by issuer-only anchors.
  */
-export function CorridorSelector({ value, onChange }: CorridorSelectorProps) {
+export function CorridorSelector({ value, onChange, assetCode }: CorridorSelectorProps) {
+  const corridors =
+    assetCode === undefined
+      ? SELECTABLE_CORRIDORS
+      : SELECTABLE_CORRIDORS.filter((c) => c.from === assetCode);
+
   return (
     <div>
-      <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
+      <label className="mb-1.5 flex items-center gap-1.5 text-sm font-medium text-secondary-text">
         Corridor
+        <kbd className="rounded border border-control-border px-1 font-mono text-[10px] font-normal text-secondary-text">
+          K
+        </kbd>
       </label>
       <select
+        id="corridor-select"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-gray-600 dark:bg-gray-800 dark:text-white"
+        className="w-full rounded-lg border border-control-border bg-bg-subtle px-3 py-2.5 text-sm text-primary-text focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
       >
-        {CORRIDORS.map((c) => (
+        {corridors.map((c) => (
           <option key={c.id} value={c.id}>
-            {COUNTRY_FLAGS[c.countryCode] ?? ''} {c.countryName} ({c.to})
+            {COUNTRY_FLAGS[c.countryCode] ?? ''} {c.countryName} ({c.from} → {c.to})
           </option>
         ))}
       </select>
     </div>
-  )
+  );
 }

@@ -1,0 +1,208 @@
+# API Versioning & Deprecation Policy
+
+> What `API-Version` guarantees, how breaking changes are announced, and how
+> long old versions are supported. Every consumer of the Stellar Intel API —
+> whether a web app, an MCP agent, or a third-party integration — should read
+> this document once.
+
+**Last reviewed:** 2026-08-26
+
+---
+
+## Table of contents
+
+- [Versioning scheme](#versioning-scheme)
+- [What constitutes a breaking change](#what-constitutes-a-breaking-change)
+- [Deprecation process](#deprecation-process)
+- [Version support window](#version-support-window)
+- [Announcement channels](#announcement-channels)
+- [API-Version header](#api-version-header)
+- [Experimental endpoints](#experimental-endpoints)
+- [Related](#related)
+
+---
+
+## Versioning scheme
+
+The public API uses **Semantic Versioning** (`MAJOR.MINOR.PATCH`, e.g. `1.3.0`), defined in `lib/api/api-version.ts` via `API_VERSION` and kept in sync with `info.version` in `public/openapi.json`. Each version is a stable snapshot of the API surface.
+
+| Component      | Version identifier             | Where it lives                  |
+| -------------- | ------------------------------ | ------------------------------- |
+| HTTP API       | `1.3.0` (Semantic Versioning)  | `Accept` / `API-Version` header |
+| Soroban oracle | Contract address (immutable)   | `.deployments/{network}.json`   |
+| MCP tools      | Latest `main` (not yet on npm) | `package.json` version          |
+| TypeScript SDK | Latest `main` (not yet on npm) | `package.json` version          |
+| OpenAPI spec   | `1.3.0` (`info.version`)       | `public/openapi.json`           |
+
+The HTTP API and the Soroban oracle are versioned independently. The REST API
+may ship a new semver release while the oracle contract remains at its initial
+deployment address.
+
+---
+
+## What constitutes a breaking change
+
+A change is **breaking** if it requires a consumer to modify their code to
+avoid a silent behaviour change or a runtime error:
+
+- Removing or renaming a REST endpoint, query parameter, or request body field
+- Changing the type, format, or nullability of a response field
+- Adding a new required request header or authentication scheme
+- Changing a Soroban contract entrypoint signature or renaming it
+- Changing the MCP tool name, input schema, or output shape
+- Removing an env var that operators rely on
+
+The following are **not** breaking:
+
+- Adding a new endpoint, field, or optional query parameter
+- Extending the OpenAPI spec with new schemas
+- Adding a new MCP tool
+- Enlarging a response with an optional field (consumers that forward
+  unknown keys are safe; consumers that deserialise into a closed type
+  may break — use open-ended deserialisation)
+- Bug fixes that align behaviour with documented contracts
+
+---
+
+## Deprecation process
+
+`lib/api/deprecation.ts` computes `Sunset` and `Warning: 299` for a pinned
+version once it has actually been superseded, and `lib/logger.ts` stamps both
+on every response at the same call site as `API-Version` — see
+`computeDeprecationHeaders` and `tests/api-version-negotiation.spec.ts`. No
+version has been retired yet, so no live response carries either header
+today; the mechanism is exercised in that test suite against synthetic
+history rather than waiting on a real deprecation to prove it out.
+
+Every breaking change follows a four-phase lifecycle:
+
+| Phase                | Duration    | What happens                                                                                                           |
+| -------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Announce**         | Day 0       | Deprecation notice posted on announcement channels (see below). The old endpoint or field continues to work unchanged. |
+| **Soft deprecation** | Days 0–90   | The old path still works. Responses include a `Warning: 299 - "deprecated"` header. Logs may warn on server side.      |
+| **Hard deprecation** | Days 90–180 | The old path returns `200` + a `Sunset` header with the removal date. Instrumentation counts usage.                    |
+| **Removal**          | Day 180+    | The old path returns `410 Gone` or a Soroban contract error. Consumers must have migrated.                             |
+
+Phase durations are minimums. A deprecated endpoint may be kept longer if
+usage remains high, announced via an extended sunset notice.
+
+**Expedited removal** (30-day minimum) is reserved for:
+
+- Security vulnerabilities that cannot be fixed while preserving the old
+  contract
+- Data-corruption bugs in a Soroban contract entrypoint
+- Legal or regulatory requirements
+
+Expedited removals are announced on all channels with the reason.
+
+---
+
+## Version support window
+
+| Surface                             | Supported versions                       | Window                                            |
+| ----------------------------------- | ---------------------------------------- | ------------------------------------------------- |
+| HTTP REST API                       | Current only¹                            | Current + 1 previous, 180 days (computed)         |
+| Soroban oracle contract             | Current deployed address                 | Until a migration is announced and executed       |
+| MCP tools                           | Latest `main` (not yet published to npm) | Semver within repository                          |
+| TypeScript SDK                      | Latest `main` (not yet published to npm) | Semver within repository                          |
+| Web UI (`stellar-intel.vercel.app`) | Latest only                              | No version guarantee — always use the current URL |
+
+¹ **The stated window is not yet what the code enforces**, in the sense that
+`SUPPORTED_API_VERSIONS` in `lib/api/api-version.ts` currently contains
+exactly one element — not because the 180-day rule is unimplemented, but
+because only one version has ever shipped, so there is nothing to retire yet.
+`computeSupportedApiVersions` computes the window from
+`API_VERSION_HISTORY` (each entry's `supersededAt` plus `SUPPORT_WINDOW_DAYS`)
+rather than a hardcoded array, and `tests/api-version-negotiation.spec.ts`
+exercises the 180-day boundary itself against synthetic history — a version
+retired 179 days ago stays in the window, 181 days ago it doesn't. The row
+above becomes "current + 1 previous" for real the first time a version ships
+and the outgoing one is recorded in `API_VERSION_HISTORY` with a
+`supersededAt` — an entry, not a rewrite.
+
+REST API consumers should specify an `API-Version` header to lock their
+integration to a known surface. Unsigned requests default to the latest
+version, which may change without notice.
+
+---
+
+## Announcement channels
+
+Deprecations and breaking changes are announced on:
+
+1. **Status endpoint** — `GET /api/status` (`app/api/status/route.ts`) returns
+   `version`, `supported_versions`, and `announced_deprecations` as JSON fields.
+2. **CHANGELOG.md** — the `[Unreleased]` section lists pending deprecations;
+   dated sections record shipped ones.
+3. **API response headers** — a deprecated-but-still-supported pin returns
+   `Sunset` and `Warning: 299` on every response (see deprecation process
+   above). No endpoint is deprecated today, so no live response carries
+   either header yet.
+4. **GitHub repository** — releases and changelogs are tracked in `CHANGELOG.md` in the repository (GitHub Releases are not used yet).
+5. **Mailing list** — subscribe at
+   `https://stellar-intel.vercel.app/updates` (planned).
+
+---
+
+## API-Version header
+
+```http
+Accept: application/json
+API-Version: 1.3.0
+```
+
+The `API-Version` request header selects the API version for the request.
+Omit it to receive the latest version (subject to change).
+
+| Behaviour                             | Version sent         | Response                                         |
+| ------------------------------------- | -------------------- | ------------------------------------------------ |
+| Consumer targets a known version      | `API-Version: 1.3.0` | That version's surface                           |
+| Consumer omits the header             | (none)               | Latest version — may change                      |
+| Consumer sends an unsupported version | `API-Version: 0.9.0` | `400 Bad Request` with supported versions listed |
+
+**Migration.** To move from one version to the next, update the `API-Version`
+header and adjust for any breaking changes listed in the changelog.
+
+**Current status.** Implemented in both directions (#888).
+
+Responses are stamped with `API-Version` by the request wrappers in
+`lib/logger.ts`, so it is present on every response — including error responses
+— rather than on the handful of routes that used to set it by hand. The value
+comes from `lib/api/api-version.ts`, and a test asserts it matches
+`info.version` in `public/openapi.json`.
+
+Requests may pin a version with the same header. An unsupported value returns
+`400` with a `supportedVersions` list; omitting the header still means "latest",
+so pinning is opt-in and no existing client is broken by the check.
+
+---
+
+## Experimental endpoints
+
+> **Not yet implemented.** No route lives under `/api/v1/experimental/` and
+> nothing emits `X-Experimental`. The convention is reserved here so that the
+> first experimental endpoint has a stated contract rather than inventing one.
+
+Endpoints under `/api/v1/experimental/` or marked with `X-Experimental: true`
+in their response header are **not covered** by this deprecation policy. They
+may change or disappear at any time without notice. Do not depend on them in
+production.
+
+An experimental endpoint graduates to stable after:
+
+1. At least one release cycle (180 days) of field use
+2. A documented contract in `public/openapi.json`
+3. A `CHANGELOG.md` entry marking it stable
+
+---
+
+## Related
+
+- [`docs/ROADMAP.md`](ROADMAP.md) — when breaking changes are planned relative
+  to waves.
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) — how the API and oracle fit into
+  the system.
+- [`CHANGELOG.md`](../CHANGELOG.md) — per-release changelog with deprecation
+  notices.
+- [`CONTRIBUTING.md`](../CONTRIBUTING.md) — conventions for PRs that introduce
+  or remove API surface.

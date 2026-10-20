@@ -1,0 +1,565 @@
+// Nightly anchor validator — stale-anchor auto-disable (#495 / B062).
+//
+// Resolves every registered anchor's `.well-known/stellar.toml` and maintains a
+// per-anchor health ledger (constants/anchor-health.json). An anchor that fails
+// resolution for `thresholdNights` consecutive runs is flagged `degraded` so the
+// app can hide it from selectors (see lib/stellar/anchors.ts) WITHOUT the anchor
+// being deleted from the registry — the flag clears automatically on the first
+// successful resolution.
+//
+// It also validates asset-issuer integrity (#489): each anchor must advertise its
+// registered asset (e.g. USDC) under the canonical issuer in its stellar.toml
+// [[CURRENCIES]], not a look-alike issuer reusing a trusted code. Mismatches are
+// flagged with a ::warning:: but are kept out of the degraded ledger.
+//
+// Designed to run from the nightly workflow (one run == one "night").
+//
+// Usage:
+//   node scripts/validate-anchors.mjs            # probe, update the ledger, print a summary
+//   node scripts/validate-anchors.mjs --dry-run  # probe + print, do not write the ledger
+//
+// Flags:
+//   --github-output   Also append a compact per-anchor digest of the ledger to
+//                     $GITHUB_OUTPUT as `ledger`, so a downstream job can quote
+//                     this run's verdict without re-reading the committed file.
+//
+// Env:
+//   ANCHOR_DEGRADE_THRESHOLD   Override the consecutive-failure threshold (default 3).
+
+import { appendFile, readFile, writeFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
+
+export const DEFAULT_THRESHOLD = 3;
+const PROBE_TIMEOUT_MS = 15_000;
+const USER_AGENT = 'stellar-intel-validate-anchors/1.0';
+
+// A strict public-hostname shape: dot-separated labels with an alphabetic TLD.
+// Rejects IPs, `localhost`, ports, userinfo (`@`) and paths — so a malformed
+// registry entry can't steer the probe at an internal/unexpected host.
+export const HOSTNAME_RE = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i;
+
+const ROOT = new URL('../', import.meta.url);
+const ANCHORS_SOURCE = new URL('constants/anchors.ts', ROOT);
+const LEDGER_PATH = new URL('constants/anchor-health.json', ROOT);
+
+/**
+ * @typedef {Object} AnchorRef
+ * @property {string} id
+ * @property {string} domain
+ * @property {string} [homeDomain] Raw `homeDomain` from the registry block, when present.
+ * @property {string} [serviceDomain] Raw `serviceDomain` from the registry block, when present.
+ * @property {boolean} requiresSep24 Whether `seps` in constants/anchors.ts lists
+ *   'sep24' — only anchors that actually register SEP-24 are expected to
+ *   advertise TRANSFER_SERVER_SEP0024 (#1121: cowrie is SEP-6/SEP-10-only and
+ *   was flagged DEGRADED for lacking a rail it never claimed).
+ * @property {string} [assetCode] Registered asset code (e.g. "USDC").
+ * @property {string} [assetIssuer] Canonical issuer literal, when written inline.
+ * @property {string} [assetIssuerRef] Identifier the source assigns to assetIssuer
+ *   (e.g. "USDC_ISSUER") when it is a reference rather than a literal.
+ * @property {boolean} [requiresSep24] Whether the registry declares SEP-24 as a
+ *   supported rail; SEP-6-only anchors are validated against TRANSFER_SERVER.
+ *
+ * @typedef {Object} Currency
+ * @property {string} code
+ * @property {string | null} issuer
+ *
+ * @typedef {Object} ProbeResult
+ * @property {boolean} ok
+ * @property {string | null} error
+ * @property {Currency[]} [currencies] Parsed [[CURRENCIES]] from a resolved toml.
+ *
+ * @typedef {'match' | 'mismatch' | 'missing' | 'unverifiable'} IssuerStatus
+ *
+ * @typedef {Object} IssuerResult
+ * @property {IssuerStatus} status
+ * @property {string | null} advertisedIssuer
+ *
+ * @typedef {Object} AnchorHealth
+ * @property {number} consecutiveFailures
+ * @property {boolean} degraded
+ * @property {string | null} lastCheckedAt
+ * @property {string} lastStatus
+ * @property {string | null} lastError
+ *
+ * @typedef {Object} HealthLedger
+ * @property {number} thresholdNights
+ * @property {string | null} updatedAt
+ * @property {Record<string, AnchorHealth>} anchors
+ */
+
+/**
+ * Extract `{ id, domain }` for every anchor in constants/anchors.ts. The probe
+ * domain is `serviceDomain` when present, else `homeDomain` — matching the
+ * resolution order the app uses in lib/stellar/anchors.ts. Parsing the source
+ * (rather than importing it) keeps this plain-Node script free of the TS/alias
+ * toolchain while still treating constants/anchors.ts as the source of truth.
+ *
+ * @param {string} source
+ * @returns {AnchorRef[]}
+ */
+export function parseAnchors(source) {
+  // Match `const ANCHORS ... = [`, landing on the array's opening bracket — not
+  // the `[]` of a `: Anchor[]` type annotation that may sit before the `=`.
+  const decl = source.match(/const\s+ANCHORS\b[^=]*=\s*\[/);
+  if (!decl) return [];
+  const arrStart = decl.index + decl[0].length - 1;
+
+  // Find the matching close bracket for the ANCHORS array (corridors arrays nest).
+  let depth = 0;
+  let arrEnd = -1;
+  for (let i = arrStart; i < source.length; i++) {
+    const ch = source[i];
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) {
+        arrEnd = i;
+        break;
+      }
+    }
+  }
+  if (arrEnd === -1) return [];
+
+  // Anchor objects contain no nested braces, so `{ ... }` blocks isolate cleanly.
+  const blocks = source.slice(arrStart, arrEnd + 1).match(/\{[^{}]*\}/g) ?? [];
+  const anchors = [];
+  for (const block of blocks) {
+    const id = block.match(/id:\s*['"]([^'"]+)['"]/)?.[1];
+    if (!id) continue;
+    const home = block.match(/homeDomain:\s*['"]([^'"]+)['"]/)?.[1];
+    const service = block.match(/serviceDomain:\s*['"]([^'"]+)['"]/)?.[1];
+    const domain = service || home;
+    if (!domain) continue;
+
+    const sepsMatch = block.match(/seps:\s*\[([^\]]*)\]/)?.[1];
+    const requiresSep24 = sepsMatch ? /['"]sep24['"]/.test(sepsMatch) : false;
+
+    /** @type {AnchorRef} */
+    const ref = { id, domain, requiresSep24 };
+    // Keep the raw registry hosts so the survey can read BOTH off the same block.
+    if (home) ref.homeDomain = home;
+    if (service) ref.serviceDomain = service;
+    const assetCode = block.match(/assetCode:\s*['"]([^'"]+)['"]/)?.[1];
+    if (assetCode) ref.assetCode = assetCode;
+    if (sepsMatch !== undefined) {
+      ref.seps = Array.from(sepsMatch.matchAll(/['"]([^'"]+)['"]/g), (m) => m[1]);
+    }
+
+    // assetIssuer may be a quoted literal (e.g. nTokens) or a bare identifier
+    // reference (e.g. `assetIssuer: USDC_ISSUER`); capture whichever form appears.
+    const assetIssuerLiteral = block.match(/assetIssuer:\s*['"]([^'"]+)['"]/)?.[1];
+    if (assetIssuerLiteral) {
+      ref.assetIssuer = assetIssuerLiteral;
+    } else {
+      const assetIssuerRef = block.match(/assetIssuer:\s*([A-Za-z_$][\w$]*)/)?.[1];
+      if (assetIssuerRef) ref.assetIssuerRef = assetIssuerRef;
+    }
+
+    anchors.push(ref);
+  }
+  return anchors;
+}
+
+/**
+ * Parse TRANSFER_SERVER (SEP-6) and TRANSFER_SERVER_SEP0024 (SEP-24) URLs
+ * from a raw stellar.toml. Only `https://` URLs are accepted.
+ *
+ * @param {string} toml
+ * @returns {{ sep6: string | null, sep24: string | null }}
+ */
+export function parseTransferServers(toml) {
+  if (!toml || typeof toml !== 'string') {
+    return { sep6: null, sep24: null };
+  }
+  const sep6Match = toml.match(/^[ \t]*TRANSFER_SERVER[ \t]*=[ \t]*["']?([^"'\s#]+)["']?/im);
+  const sep24Match = toml.match(
+    /^[ \t]*TRANSFER_SERVER_SEP0024[ \t]*=[ \t]*["']?([^"'\s#]+)["']?/im
+  );
+  const sep6Url = sep6Match?.[1]?.trim() ?? null;
+  const sep24Url = sep24Match?.[1]?.trim() ?? null;
+  return {
+    sep6: sep6Url && sep6Url.startsWith('https://') ? sep6Url : null,
+    sep24: sep24Url && sep24Url.startsWith('https://') ? sep24Url : null,
+  };
+}
+
+/**
+ * Determine the withdraw availability of an asset from a parsed /info response.
+ * Treats 'native' and 'XLM' as equivalent.
+ *
+ * @param {any} info Parsed /info JSON
+ * @param {string} assetCode
+ * @returns {'enabled' | 'disabled' | 'absent'}
+ */
+export function withdrawAssetStatus(info, assetCode) {
+  if (!info || typeof info !== 'object' || !info.withdraw || typeof info.withdraw !== 'object') {
+    return 'absent';
+  }
+  let entry = info.withdraw[assetCode];
+  if (entry === undefined && (assetCode === 'native' || assetCode === 'XLM')) {
+    entry = info.withdraw[assetCode === 'native' ? 'XLM' : 'native'];
+  }
+  if (!entry || typeof entry !== 'object') {
+    return 'absent';
+  }
+  return entry.enabled === true ? 'enabled' : 'disabled';
+}
+
+/**
+ * Parse the `[[CURRENCIES]]` tables out of a raw stellar.toml. Returns each
+ * currency's `code` and `issuer` (null when the entry omits an issuer). A
+ * line-anchored, table-scoped scan keeps it dependency-free while ignoring
+ * `issuer`/`code` keys that belong to other tables.
+ *
+ * @param {string} toml
+ * @returns {Currency[]}
+ */
+export function parseCurrencies(toml) {
+  // Split on each [[CURRENCIES]] header; slice(1) drops the preamble before the
+  // first one. Each piece holds one currency table until the next table header.
+  const sections = toml.split(/^[ \t]*\[\[[ \t]*CURRENCIES[ \t]*\]\][ \t]*$/im).slice(1);
+  /** @type {Currency[]} */
+  const currencies = [];
+  for (const section of sections) {
+    // Limit to this table: stop at the next `[` table header at line start.
+    const body = section.split(/^[ \t]*\[/m)[0];
+    const code = body.match(/^[ \t]*code[ \t]*=[ \t]*["']([^"']+)["']/im)?.[1];
+    if (!code) continue;
+    const issuer = body.match(/^[ \t]*issuer[ \t]*=[ \t]*["']([^"']+)["']/im)?.[1] ?? null;
+    currencies.push({ code, issuer });
+  }
+  return currencies;
+}
+
+/**
+ * Resolve the canonical issuer an anchor is expected to settle. Inline literals
+ * are returned as-is; a `USDC_ISSUER` reference is resolved from the environment
+ * (the same NEXT_PUBLIC_USDC_ISSUER the app reads). Returns null when the issuer
+ * cannot be determined, in which case validation is reported `unverifiable`.
+ *
+ * @param {AnchorRef} anchor
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {string | null}
+ */
+export function resolveExpectedIssuer(anchor, env = process.env) {
+  if (anchor.assetIssuer) return anchor.assetIssuer;
+  if (anchor.assetIssuerRef === 'USDC_ISSUER') {
+    const value = env.NEXT_PUBLIC_USDC_ISSUER?.trim();
+    return value ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Compare an anchor's expected issuer against the issuer advertised for the same
+ * asset code in its toml CURRENCIES. `mismatch` is the look-alike case (#489):
+ * the anchor publishes a trusted code under a different issuer.
+ *
+ * @param {{ assetCode?: string, expectedIssuer: string | null }} anchor
+ * @param {Currency[]} currencies
+ * @returns {IssuerResult}
+ */
+export function validateIssuer(anchor, currencies) {
+  const advertisedIssuer =
+    currencies.find((c) => c.code === anchor.assetCode && c.issuer)?.issuer ?? null;
+
+  if (!anchor.expectedIssuer) return { status: 'unverifiable', advertisedIssuer };
+  if (advertisedIssuer === null) return { status: 'missing', advertisedIssuer };
+  return advertisedIssuer === anchor.expectedIssuer
+    ? { status: 'match', advertisedIssuer }
+    : { status: 'mismatch', advertisedIssuer };
+}
+
+/**
+ * Fold a single probe result into an anchor's prior health record. Success resets
+ * the failure streak; failure increments it. `degraded` latches on once the streak
+ * reaches the threshold and clears on the next success.
+ *
+ * @param {AnchorHealth | undefined} prev
+ * @param {ProbeResult} probe
+ * @param {number} threshold
+ * @param {string} now ISO timestamp
+ * @returns {AnchorHealth}
+ */
+export function nextHealth(prev, probe, threshold, now) {
+  const priorFailures = prev?.consecutiveFailures ?? 0;
+  const consecutiveFailures = probe.ok ? 0 : priorFailures + 1;
+  let lastError = null;
+  if (!probe.ok) lastError = probe.error ?? 'unknown error';
+  return {
+    consecutiveFailures,
+    degraded: consecutiveFailures >= threshold,
+    lastCheckedAt: now,
+    lastStatus: probe.ok ? 'ok' : 'fail',
+    lastError,
+  };
+}
+
+/**
+ * Build the next ledger from the prior ledger and this run's probe results. Only
+ * anchors present in `probesById` are kept, so anchors removed from the registry
+ * are pruned from the ledger automatically.
+ *
+ * @param {Partial<HealthLedger> | undefined} prevLedger
+ * @param {Record<string, ProbeResult>} probesById
+ * @param {{ threshold: number, now: string }} opts
+ * @returns {HealthLedger}
+ */
+export function applyProbes(prevLedger, probesById, { threshold, now }) {
+  /** @type {Record<string, AnchorHealth>} */
+  const anchors = {};
+  for (const [id, probe] of Object.entries(probesById)) {
+    anchors[id] = nextHealth(prevLedger?.anchors?.[id], probe, threshold, now);
+  }
+  return { thresholdNights: threshold, updatedAt: now, anchors };
+}
+
+/**
+ * Probe a single anchor domain's stellar.toml. A 200 response is a success;
+ * when `requiresSep24` is set, a response that does not also advertise SEP-24
+ * (`TRANSFER_SERVER_SEP0024`) is a failure too — but only then. An anchor that
+ * never registered SEP-24 (e.g. a SEP-6-only anchor) is not missing anything
+ * by not advertising it (#1121).
+ *
+ * @param {string} domain
+ * @param {boolean} requiresSep24
+ * @returns {Promise<ProbeResult>}
+ */
+export async function probeDomain(domain, requiresSep24) {
+  // Validate the host before it reaches fetch: this rejects a malformed registry
+  // entry and constrains the file-derived value to a known-safe URL shape.
+  if (!HOSTNAME_RE.test(domain)) {
+    return { ok: false, error: `invalid anchor domain: ${domain}`, currencies: [] };
+  }
+  const url = new URL(`https://${domain}/.well-known/stellar.toml`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': USER_AGENT },
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}`, currencies: [] };
+    const toml = await res.text();
+    const currencies = parseCurrencies(toml);
+    if (requiresSep24 && !/^\s*TRANSFER_SERVER_SEP0024\s*=/im.test(toml)) {
+      return { ok: false, error: 'missing TRANSFER_SERVER_SEP0024 (SEP-24)', currencies, toml };
+    }
+    return { ok: true, error: null, currencies, toml };
+  } catch (err) {
+    const code = err?.cause?.code ? `:${err.cause.code}` : '';
+    return { ok: false, error: `${err?.name ?? 'Error'}${code}`, currencies: [] };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Fetch and parse `<server>/info` with PROBE_TIMEOUT_MS and USER_AGENT.
+ *
+ * @param {string} serverUrl
+ * @returns {Promise<{ ok: true, info: any } | { ok: false, error: string }>}
+ */
+async function fetchInfo(serverUrl) {
+  const normalized = serverUrl.replace(/\/+$/, '');
+  const url = new URL(`${normalized}/info`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': USER_AGENT },
+    });
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
+    const info = await res.json();
+    return { ok: true, info };
+  } catch (err) {
+    const code = err?.cause?.code ? `:${err.cause.code}` : '';
+    return { ok: false, error: `${err?.name ?? 'Error'}${code}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function statusLabel(health) {
+  if (health.degraded) return 'DEGRADED';
+  return health.lastStatus === 'ok' ? 'ok' : 'fail';
+}
+
+/**
+ * Render a ledger as a compact per-anchor digest for the nightly alert (#1015).
+ * One line per anchor carrying the three fields the alert was missing —
+ * `lastStatus`, `consecutiveFailures`, `degraded` — plus the error that caused a
+ * failure, then a count line. Anchors keep ledger order, which is registry order.
+ *
+ * @param {Partial<HealthLedger> | undefined} ledger
+ * @returns {string}
+ */
+export function formatLedgerDigest(ledger) {
+  const entries = Object.entries(ledger?.anchors ?? {});
+  if (entries.length === 0) return 'ledger is empty — no anchors were probed';
+
+  const idWidth = Math.max(...entries.map(([id]) => id.length));
+  const lines = entries.map(([id, health]) => {
+    const detail = health.lastError ? ` — ${health.lastError}` : '';
+    return (
+      `${id.padEnd(idWidth)} | ${String(health.lastStatus).padEnd(4)} | ` +
+      `fails ${health.consecutiveFailures} | degraded ${health.degraded ? 'yes' : 'no'}${detail}`
+    );
+  });
+
+  const failing = entries.filter(([, h]) => h.lastStatus !== 'ok').length;
+  const degraded = entries.filter(([, h]) => h.degraded).length;
+  lines.push(
+    `${failing} of ${entries.length} anchor(s) failing, ${degraded} degraded ` +
+      `(threshold ${ledger?.thresholdNights ?? DEFAULT_THRESHOLD} night(s)).`
+  );
+  return lines.join('\n');
+}
+
+async function main() {
+  const dryRun = process.argv.includes('--dry-run');
+  const emitGithubOutput = process.argv.includes('--github-output');
+  const source = await readFile(ANCHORS_SOURCE, 'utf8');
+  const anchors = parseAnchors(source);
+
+  if (anchors.length === 0) {
+    console.warn('No anchors found in constants/anchors.ts; nothing to validate.');
+    return;
+  }
+
+  /** @type {Partial<HealthLedger>} */
+  let prevLedger = { anchors: {} };
+  try {
+    prevLedger = JSON.parse(await readFile(LEDGER_PATH, 'utf8'));
+  } catch {
+    // First run (or a malformed ledger): start from an empty ledger.
+  }
+
+  const threshold =
+    Number(process.env.ANCHOR_DEGRADE_THRESHOLD) || prevLedger.thresholdNights || DEFAULT_THRESHOLD;
+  const now = new Date().toISOString();
+
+  // Probe in parallel, then reassemble in source order for deterministic diffs.
+  const entries = anchors.map(async ({ id, domain, requiresSep24 }) => [
+    id,
+    await probeDomain(domain, requiresSep24),
+  ]);
+  const probesById = Object.fromEntries(await Promise.all(entries));
+  const ledger = applyProbes(prevLedger, probesById, { threshold, now });
+
+  console.log(`Anchor validation — ${now} (threshold: ${threshold} night(s))`);
+  for (const { id, domain } of anchors) {
+    const health = ledger.anchors[id];
+    const detail = health.lastError ? ` — ${health.lastError}` : '';
+    const streak = `streak ${health.consecutiveFailures}`;
+    const line = `  ${id.padEnd(12)} ${domain.padEnd(28)} ${statusLabel(health)} (${streak})${detail}`;
+    console.log(line);
+  }
+
+  const degraded = Object.keys(ledger.anchors).filter((id) => ledger.anchors[id].degraded);
+  if (degraded.length > 0) {
+    console.warn(`::warning::${degraded.length} anchor(s) degraded: ${degraded.join(', ')}`);
+  }
+
+  // Asset-issuer validation (#489): confirm each reachable anchor settles its
+  // canonical issuer and is not a look-alike. Reported only for probes that
+  // returned a toml; it never touches the degraded ledger above.
+  console.log('Asset-issuer validation (canonical issuer match):');
+  /** @type {{ id: string, advertisedIssuer: string | null, expectedIssuer: string | null }[]} */
+  const mismatches = [];
+  for (const anchor of anchors) {
+    if (!anchor.assetCode) continue;
+    const expectedIssuer = resolveExpectedIssuer(anchor);
+    const currencies = probesById[anchor.id]?.currencies ?? [];
+    const { status, advertisedIssuer } = validateIssuer({ ...anchor, expectedIssuer }, currencies);
+    const detail = advertisedIssuer ? ` advertised ${advertisedIssuer}` : '';
+    console.log(
+      `  ${anchor.id.padEnd(12)} ${anchor.assetCode.padEnd(6)} ${status.toUpperCase()}${detail}`
+    );
+    if (status === 'mismatch') mismatches.push({ id: anchor.id, advertisedIssuer, expectedIssuer });
+  }
+  if (mismatches.length > 0) {
+    console.warn(
+      `::warning::${mismatches.length} anchor(s) advertise a look-alike issuer: ${mismatches
+        .map((m) => `${m.id} (${m.advertisedIssuer} != ${m.expectedIssuer})`)
+        .join(', ')}`
+    );
+  }
+
+  // Asset-drift validation (#1279): verify registered assets are enabled on
+  // live withdraw /info endpoints for declared rails (sep6 / sep24).
+  console.log('Asset-drift validation (live withdraw /info):');
+  /** @type {string[]} */
+  const driftWarnings = [];
+  for (const anchor of anchors) {
+    if (!anchor.assetCode) continue;
+    const probe = probesById[anchor.id];
+    if (!probe?.ok || !probe.toml) continue;
+
+    const servers = parseTransferServers(probe.toml);
+    const declaredRails = (anchor.seps ?? []).filter((sep) => sep === 'sep6' || sep === 'sep24');
+
+    for (const rail of declaredRails) {
+      const serverUrl = rail === 'sep6' ? servers.sep6 : servers.sep24;
+      if (!serverUrl) {
+        const warn = `::warning::${anchor.id}: ${anchor.assetCode} is absent on ${rail} /info (missing ${rail === 'sep6' ? 'TRANSFER_SERVER' : 'TRANSFER_SERVER_SEP0024'})`;
+        driftWarnings.push(warn);
+        console.log(
+          `  ${anchor.id.padEnd(12)} ${anchor.assetCode.padEnd(6)} ${rail.padEnd(6)} MISSING SERVER`
+        );
+        continue;
+      }
+      const infoRes = await fetchInfo(serverUrl);
+      if (!infoRes.ok) {
+        const warn = `::warning::${anchor.id}: failed to fetch ${rail} /info (${infoRes.error})`;
+        driftWarnings.push(warn);
+        console.log(
+          `  ${anchor.id.padEnd(12)} ${anchor.assetCode.padEnd(6)} ${rail.padEnd(6)} ERROR (${infoRes.error})`
+        );
+        continue;
+      }
+      const status = withdrawAssetStatus(infoRes.info, anchor.assetCode);
+      console.log(
+        `  ${anchor.id.padEnd(12)} ${anchor.assetCode.padEnd(6)} ${rail.padEnd(6)} ${status.toUpperCase()}`
+      );
+      if (status !== 'enabled') {
+        driftWarnings.push(
+          `::warning::${anchor.id}: ${anchor.assetCode} is ${status} on ${rail} /info`
+        );
+      }
+    }
+  }
+  for (const warn of driftWarnings) {
+    console.warn(warn);
+  }
+
+  // Publish this run's verdict as a step output. It is written before the
+  // --dry-run return: the digest describes the probe, not the write, and a
+  // caller that skips the write still wants to know what was found.
+  if (emitGithubOutput && process.env.GITHUB_OUTPUT) {
+    const digest = formatLedgerDigest(ledger);
+    await appendFile(
+      process.env.GITHUB_OUTPUT,
+      `ledger<<LEDGER_EOF\n${digest}\nLEDGER_EOF\n`,
+      'utf8'
+    );
+  }
+
+  if (dryRun) {
+    console.log('(dry run — ledger not written)');
+    return;
+  }
+  await writeFile(LEDGER_PATH, `${JSON.stringify(ledger, null, 2)}\n`, 'utf8');
+  console.log('Wrote constants/anchor-health.json');
+}
+
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

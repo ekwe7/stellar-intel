@@ -1,0 +1,48 @@
+import { describe, it, expect } from 'vitest';
+import { ANCHORS, CORRIDORS, ANCHOR_HOME_DOMAINS } from '@/constants/anchors';
+import { USDC_ISSUER } from '@/lib/config';
+
+describe('zeam.money triage (B032)', () => {
+  const zeam = ANCHORS.find((a) => a.id === 'zeam');
+
+  it('is included in ANCHORS — has SEP-24 fiat ZAR corridor', () => {
+    expect(zeam).toBeDefined();
+  });
+
+  it('uses the resolvable home domain for SEP endpoint discovery', () => {
+    expect(zeam?.homeDomain).toBe('zeam.money');
+    expect(zeam?.serviceDomain).toBeUndefined();
+  });
+
+  it('anchors USDC with the correct issuer', () => {
+    expect(zeam?.assetCode).toBe('USDC');
+    expect(zeam?.assetIssuer).toBe(USDC_ISSUER);
+  });
+
+  it('tracks the verified Zeam corridors while keeping ZAR unverified', () => {
+    expect(zeam?.corridors).toContain('usdc-zar');
+    expect(zeam?.corridors).toContain('usdc-brl');
+    expect(zeam?.unverifiedCorridors).toContain('usdc-zar');
+  });
+
+  it('usdc-zar corridor is defined in CORRIDORS', () => {
+    const corridor = CORRIDORS.find((c) => c.id === 'usdc-zar');
+    expect(corridor).toBeDefined();
+    expect(corridor?.from).toBe('USDC');
+    expect(corridor?.to).toBe('ZAR');
+    expect(corridor?.countryCode).toBe('ZA');
+  });
+
+  it('serves the usdc-brl corridor via the verified BRL entry point', () => {
+    expect(zeam?.corridors).toContain('usdc-brl');
+    const corridor = CORRIDORS.find((c) => c.id === 'usdc-brl');
+    expect(corridor).toBeDefined();
+    expect(corridor?.from).toBe('USDC');
+    expect(corridor?.to).toBe('BRL');
+    expect(corridor?.countryCode).toBe('BR');
+  });
+
+  it('zeam home domain is registered in ANCHOR_HOME_DOMAINS', () => {
+    expect(ANCHOR_HOME_DOMAINS['zeam']).toBe('zeam.money');
+  });
+});

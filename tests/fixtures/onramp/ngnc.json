@@ -1,0 +1,19 @@
+{
+  "_comment": "Live SEP-24 GET /info deposit capture (#1095, #1275), captured against https://anchor.ngnc.online/sep24/info showing enabled NGNC deposit.",
+  "capturedAt": "2026-09-23T00:45:00.000Z",
+  "anchorId": "ngnc",
+  "homeDomain": "ngnc.online",
+  "registeredAssetCode": "NGNC",
+  "transferServerSep0024": "https://anchor.ngnc.online/sep24",
+  "reachable": true,
+  "supportsDeposit": true,
+  "info": {
+    "deposit": {
+      "NGNC": {
+        "enabled": true,
+        "min_amount": 20000.0,
+        "max_amount": 20000000.0
+      }
+    }
+  }
+}

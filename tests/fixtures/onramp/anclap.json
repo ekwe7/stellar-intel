@@ -1,0 +1,30 @@
+{
+  "_comment": "Live SEP-24 GET /info deposit capture (#1095, #1273), captured against https://api.anclap.com/transfer24 showing enabled ARS deposit matching the registered asset.",
+  "capturedAt": "2026-09-23T00:45:00.000Z",
+  "anchorId": "anclap",
+  "homeDomain": "anclap.com",
+  "registeredAssetCode": "ARS",
+  "transferServerSep0024": "https://api.anclap.com/transfer24",
+  "reachable": true,
+  "supportsDeposit": true,
+  "info": {
+    "deposit": {
+      "ARS": {
+        "enabled": true,
+        "authentication_required": true,
+        "min_amount": 11,
+        "max_amount": 500000,
+        "fee_fixed": 10,
+        "fee_percent": 1
+      },
+      "PEN": {
+        "enabled": true,
+        "authentication_required": true,
+        "min_amount": 2,
+        "max_amount": 3000,
+        "fee_fixed": 1,
+        "fee_percent": 1
+      }
+    }
+  }
+}

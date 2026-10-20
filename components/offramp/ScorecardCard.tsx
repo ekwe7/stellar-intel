@@ -1,0 +1,728 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { ExternalLink } from 'lucide-react';
+import { Card } from '@/components/ui/Card';
+import { Skeleton } from '@/components/ui/Skeleton';
+import {
+  hasEnoughData,
+  estimateTimeToThreshold,
+  MIN_OUTCOMES_THRESHOLD,
+} from '@/lib/reputation/thresholds';
+import { Sparkline } from '@/components/ui/Sparkline';
+import {
+  calculateFreshness,
+  formatDrift,
+  getFreshnessLabel,
+  getFreshnessBadgeColor,
+  type FreshnessResult,
+} from '@/lib/oracle/freshness';
+import { ANCHORS } from '@/constants';
+import type { AnchorMetadata } from '@/types';
+import { AnchorLogo } from '@/components/ui/AnchorLogo';
+import { Tooltip } from '@/components/ui/Tooltip';
+import { composite, NORM_SETTLE_SECONDS } from '@/lib/reputation/composite';
+import { Info } from 'lucide-react';
+
+type ReputationWindow = '7d' | '30d' | '90d';
+
+interface ScorecardCardProps {
+  anchorId: string;
+  window: ReputationWindow;
+  latestOracleTxHash?: string | undefined;
+}
+
+interface ReputationMetrics {
+  fillRate: number | null;
+  settleP50: number | null;
+  settleP95: number | null;
+  slippageP50: number | null;
+  slippageP95: number | null;
+  outcomesCount: number;
+  computedAt: string | null;
+  lastPublisherTxTimestamp: string | null;
+}
+
+const emptyMetrics: ReputationMetrics = {
+  fillRate: null,
+  settleP50: null,
+  settleP95: null,
+  slippageP50: null,
+  slippageP95: null,
+  outcomesCount: 0,
+  computedAt: null,
+  lastPublisherTxTimestamp: null,
+};
+
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function toObject(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function toTimestamp(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  return Number.isNaN(Date.parse(value)) ? null : value;
+}
+
+function scorecardKey(timeframe: ReputationWindow): string {
+  return timeframe.replace('d', '');
+}
+
+function parseNestedScorecard(
+  payload: Record<string, unknown>,
+  timeframe: ReputationWindow
+): ReputationMetrics | null {
+  const scorecards = toObject(payload.scorecards);
+  const scorecard = toObject(scorecards?.[scorecardKey(timeframe)]);
+  if (!scorecard) return null;
+
+  const settleMs = toObject(scorecard.settleMs);
+  const settleP50Ms = toNumber(settleMs?.p50);
+  const settleP95Ms = toNumber(settleMs?.p95);
+  const slippage = toObject(scorecard.slippage);
+  const slippageP50 = toNumber(slippage?.p50);
+  const slippageP95 = toNumber(slippage?.p95);
+
+  return {
+    fillRate: toNumber(scorecard.fillRate),
+    settleP50: settleP50Ms !== null ? Math.round(settleP50Ms / 1000) : null,
+    settleP95: settleP95Ms !== null ? Math.round(settleP95Ms / 1000) : null,
+    slippageP50: slippageP50 !== null ? slippageP50 * 100 : null,
+    slippageP95: slippageP95 !== null ? slippageP95 * 100 : null,
+    outcomesCount: toNumber(scorecard.sampleSize) ?? 0,
+    computedAt:
+      toTimestamp(scorecard.computedAt) ??
+      toTimestamp(scorecard.computed_at) ??
+      toTimestamp(payload.computedAt) ??
+      toTimestamp(payload.computed_at),
+    lastPublisherTxTimestamp:
+      toTimestamp(scorecard.lastPublisherTxTimestamp) ??
+      toTimestamp(scorecard.last_publisher_tx_timestamp) ??
+      toTimestamp(payload.lastPublisherTxTimestamp) ??
+      toTimestamp(payload.last_publisher_tx_timestamp),
+  };
+}
+
+/**
+ * Probe-derived health, as returned alongside `scorecards` by
+ * GET /api/reputation/[anchor]. Deliberately a separate shape from
+ * ReputationMetrics: one is what we observed by probing, the other is what
+ * happened when someone settled. They are never merged.
+ */
+interface HealthSignalView {
+  rate: number | null;
+  samples: number;
+  incomplete: number;
+}
+
+interface HealthView {
+  state: 'ok' | 'insufficient_data';
+  score: number | null;
+  observedDays: number;
+  continuousDays: number;
+  probeSamples: number;
+  uptime: HealthSignalView;
+  quoteAvailability: HealthSignalView;
+  issuerMatch: HealthSignalView;
+  tomlIntegrity: HealthSignalView;
+}
+
+function parseHealth(body: unknown): HealthView | null {
+  const payload = toObject(body);
+  const health = payload ? toObject(payload.health) : null;
+  if (!health) return null;
+
+  const signals = toObject(health.signals) ?? {};
+  const signalOf = (key: string): HealthSignalView => {
+    const signal = toObject(signals[key]);
+    return {
+      rate: signal ? toNumber(signal.successRate) : null,
+      samples: (signal ? toNumber(signal.samples) : null) ?? 0,
+      incomplete: (signal ? toNumber(signal.incomplete) : null) ?? 0,
+    };
+  };
+
+  const samples = toNumber(health.sampleSize) ?? 0;
+  const incomplete = toNumber(health.incompleteChecks) ?? 0;
+  if (samples <= 0 && incomplete <= 0) return null;
+
+  return {
+    state: health.state === 'ok' ? 'ok' : 'insufficient_data',
+    score: toNumber(health.healthScore),
+    observedDays: toNumber(health.observedDays) ?? 0,
+    continuousDays: toNumber(health.continuousDays) ?? 0,
+    probeSamples: samples,
+    uptime: signalOf('uptime'),
+    quoteAvailability: signalOf('quoteAvailability'),
+    issuerMatch: signalOf('issuerMatch'),
+    tomlIntegrity: signalOf('tomlIntegrity'),
+  };
+}
+
+function formatRate(signal: HealthSignalView): string {
+  // Three different states that must never render the same:
+  //   a rate            the check ran and this is the answer
+  //   check unavailable the check ran and could not reach a verdict
+  //   not sampled       the check has not run at all
+  // Printing 0% for either of the last two would accuse the anchor of failing
+  // something it was never actually measured on.
+  if (signal.rate !== null) return `${(signal.rate * 100).toFixed(1)}%`;
+  if (signal.incomplete > 0) return 'check unavailable';
+  return 'not sampled';
+}
+
+/**
+ * The panel a visitor sees when an anchor has been probed but never settled
+ * through — which today is every anchor. Before this, that case rendered a flat
+ * "No reputation metrics available", and the probe record was invisible on the
+ * site despite existing in the ledger.
+ */
+function HealthPanel({ health, anchorName }: { health: HealthView; anchorName: string }) {
+  const signalRows: Array<{ label: string; signal: HealthSignalView }> = [
+    { label: 'Uptime', signal: health.uptime },
+    { label: 'Quote availability', signal: health.quoteAvailability },
+    { label: 'Issuer match', signal: health.issuerMatch },
+    { label: 'TOML integrity', signal: health.tomlIntegrity },
+  ];
+
+  return (
+    <div className="rounded-xl border border-border bg-bg-sunken p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-sm font-semibold text-primary-text">Observed health</h3>
+        <p className="font-mono text-xs text-fg-muted">
+          {health.probeSamples.toLocaleString()} probes · {health.observedDays} days
+          {health.continuousDays > 0 ? ` · ${health.continuousDays}-day streak` : ''}
+        </p>
+      </div>
+
+      {health.score !== null && (
+        <p className="mt-3 font-mono text-3xl tabular-nums text-primary-text">
+          {(health.score * 100).toFixed(1)}
+          <span className="text-base text-fg-muted">/100</span>
+        </p>
+      )}
+
+      <dl className="mt-4 space-y-2">
+        {signalRows.map((row) => (
+          <div key={row.label} className="flex items-baseline justify-between gap-4 text-sm">
+            <dt className="text-secondary-text">{row.label}</dt>
+            <dd
+              className={
+                row.signal.rate === null
+                  ? 'font-mono text-xs text-fg-muted'
+                  : 'font-mono tabular-nums text-primary-text'
+              }
+            >
+              {formatRate(row.signal)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+
+      <p className="mt-4 border-t border-border pt-3 text-xs text-fg-muted">
+        Health is what we observed by probing {anchorName} every five minutes. Reputation — fill
+        rate, settlement time, slippage — is measured from settled transactions, and this anchor has
+        none yet. It has not performed badly; it has not been observed performing.
+      </p>
+    </div>
+  );
+}
+
+function parseReputationResponse(body: unknown, timeframe: ReputationWindow): ReputationMetrics {
+  const payload = toObject(body) ?? {};
+  const nestedMetrics = parseNestedScorecard(payload, timeframe);
+  if (nestedMetrics) return nestedMetrics;
+
+  return {
+    fillRate:
+      toNumber(payload.fill_rate ?? payload.fillRate) ??
+      toNumber(payload.fill_rate_percent ?? payload.fillRatePercent) ??
+      null,
+    settleP50:
+      toNumber(
+        payload.settle_p50 ?? payload.settleP50 ?? payload.settlement_p50 ?? payload.settlementP50
+      ) ?? null,
+    settleP95:
+      toNumber(
+        payload.settle_p95 ?? payload.settleP95 ?? payload.settlement_p95 ?? payload.settlementP95
+      ) ?? null,
+    slippageP50:
+      toNumber(
+        payload.slippage_p50 ??
+          payload.slippageP50 ??
+          payload.slippage_p50_percent ??
+          payload.slippageP50Percent
+      ) ?? null,
+    slippageP95:
+      toNumber(
+        payload.slippage_p95 ??
+          payload.slippageP95 ??
+          payload.slippage_p95_percent ??
+          payload.slippageP95Percent
+      ) ?? null,
+    outcomesCount: toNumber(payload.outcomes_count ?? payload.outcomesCount) ?? 0,
+    computedAt:
+      toTimestamp(payload.computedAt) ??
+      toTimestamp(payload.computed_at) ??
+      toTimestamp(payload.lastProbeAt) ??
+      toTimestamp(payload.last_probe_at) ??
+      toTimestamp(payload.lastProbedAt) ??
+      toTimestamp(payload.last_probed_at),
+    lastPublisherTxTimestamp:
+      toTimestamp(payload.lastPublisherTxTimestamp) ??
+      toTimestamp(payload.last_publisher_tx_timestamp) ??
+      toTimestamp(payload.publisherTxTimestamp) ??
+      toTimestamp(payload.publisher_tx_timestamp),
+  };
+}
+
+function formatFillRate(value: number | null): string {
+  if (value === null) {
+    return '—';
+  }
+
+  const percent = value > 0 && value <= 1 ? value * 100 : value;
+  return `${new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: 1,
+    minimumFractionDigits: 0,
+  }).format(percent)}%`;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null) {
+    return '—';
+  }
+
+  return `${new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+  }).format(value)}%`;
+}
+
+function formatSeconds(value: number | null): string {
+  if (value === null) {
+    return '—';
+  }
+
+  return `${new Intl.NumberFormat('en-US', {
+    maximumFractionDigits: value < 10 ? 1 : 0,
+    minimumFractionDigits: 0,
+  }).format(value)}s`;
+}
+
+function hasReputationMetrics(metrics: ReputationMetrics): boolean {
+  return (
+    metrics.fillRate !== null ||
+    metrics.settleP50 !== null ||
+    metrics.settleP95 !== null ||
+    metrics.slippageP50 !== null ||
+    metrics.slippageP95 !== null
+  );
+}
+
+function FreshnessBadge({ freshness }: { freshness: FreshnessResult | null }) {
+  if (!freshness) return null;
+
+  const colors = getFreshnessBadgeColor(freshness.status);
+  const label = getFreshnessLabel(freshness.status);
+  const drift = freshness.driftMs ? formatDrift(freshness.driftMs) : null;
+
+  return (
+    <div
+      className={`rounded-lg border border-border ${colors.bg} p-3`}
+      role="status"
+      aria-label={`Probe health: ${label}`}
+    >
+      <div className="flex items-center gap-2">
+        <div className={colors.icon}>
+          {freshness.status === 'fresh' && (
+            <svg aria-hidden="true" className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+          {freshness.status === 'stale' && (
+            <svg aria-hidden="true" className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+          {freshness.status === 'unknown' && (
+            <svg aria-hidden="true" className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path
+                fillRule="evenodd"
+                d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z"
+                clipRule="evenodd"
+              />
+            </svg>
+          )}
+        </div>
+        <div className="flex-1">
+          <p className={`text-sm font-medium ${colors.text}`}>{label}</p>
+          {drift && <p className={`text-xs ${colors.text} opacity-80`}>Drift: {drift}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STELLAR_EXPERT_TX_BASE = 'https://stellar.expert/explorer/public/tx';
+const METHODOLOGY_DOC_URL = '/methodology';
+
+function CompositeScoreBreakdown({
+  fillRate,
+  slippageP50,
+  settleP50,
+  sampleSize,
+}: {
+  fillRate: number | null;
+  slippageP50: number | null;
+  settleP50: number | null;
+  sampleSize: number;
+}) {
+  const fillRatePercent = fillRate !== null ? formatFillRate(fillRate) : '—';
+  const slippagePercent = slippageP50 !== null ? formatPercent(slippageP50) : '—';
+  const settleSeconds = settleP50 !== null ? formatSeconds(settleP50) : '—';
+
+  return (
+    <div className="space-y-2">
+      <p className="font-medium text-primary-text">
+        composite = fill rate × (1 − slippage) ÷ (settle ÷ {NORM_SETTLE_SECONDS}s)
+      </p>
+      <ul className="space-y-1">
+        <li>Fill rate: {fillRatePercent}</li>
+        <li>Slippage (p50): {slippagePercent}</li>
+        <li>Settle (p50): {settleSeconds}</li>
+      </ul>
+      <p className="text-fg-muted">
+        Sample size: {sampleSize} outcome{sampleSize !== 1 ? 's' : ''}
+      </p>
+      <a
+        href={METHODOLOGY_DOC_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="inline-block text-accent hover:underline dark:text-accent"
+      >
+        Methodology docs
+      </a>
+    </div>
+  );
+}
+
+function MetadataSection({ metadata }: { metadata: AnchorMetadata }) {
+  const hasRegions = metadata.regions?.senders || metadata.regions?.receivers;
+  if (!hasRegions && !metadata.kycModel && !metadata.feeModel) return null;
+
+  return (
+    <dl className="grid gap-3 sm:grid-cols-2">
+      {hasRegions && (
+        <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+          <dt className="text-xs uppercase tracking-wide text-fg-muted">Regions</dt>
+          <dd className="mt-2 space-y-1 text-sm text-primary-text">
+            {metadata.regions?.senders && (
+              <p>
+                <span className="text-fg-muted">Senders: </span>
+                {metadata.regions.senders}
+              </p>
+            )}
+            {metadata.regions?.receivers && (
+              <p>
+                <span className="text-fg-muted">Receivers: </span>
+                {metadata.regions.receivers}
+              </p>
+            )}
+          </dd>
+        </div>
+      )}
+      {(metadata.kycModel || metadata.feeModel) && (
+        <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+          {metadata.kycModel && (
+            <>
+              <dt className="text-xs uppercase tracking-wide text-fg-muted">KYC model</dt>
+              <dd className="mt-1 text-sm text-primary-text">{metadata.kycModel}</dd>
+            </>
+          )}
+          {metadata.feeModel && (
+            <>
+              <dt
+                className={
+                  metadata.kycModel
+                    ? 'mt-3 text-xs uppercase tracking-wide text-fg-muted'
+                    : 'text-xs uppercase tracking-wide text-fg-muted'
+                }
+              >
+                Fees
+              </dt>
+              <dd className="mt-1 text-sm text-primary-text">{metadata.feeModel}</dd>
+            </>
+          )}
+        </div>
+      )}
+    </dl>
+  );
+}
+
+export function ScorecardCard({
+  anchorId,
+  window: timeframe,
+  latestOracleTxHash,
+}: ScorecardCardProps) {
+  const [metrics, setMetrics] = useState<ReputationMetrics>(emptyMetrics);
+  const [health, setHealth] = useState<HealthView | null>(null);
+  const [historyData, setHistoryData] = useState<number[]>([]);
+  const [freshness, setFreshness] = useState<FreshnessResult | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isActive = true;
+
+    setIsLoading(true);
+    setError(null);
+    setMetrics(emptyMetrics);
+    setHealth(null);
+    setHistoryData([]);
+    setFreshness(null);
+
+    fetch(`/api/reputation/${encodeURIComponent(anchorId)}?window=${encodeURIComponent(timeframe)}`)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load reputation data (${response.status})`);
+        }
+
+        return response.json();
+      })
+      .then((body) => {
+        if (!isActive) return;
+        const parsedMetrics = parseReputationResponse(body, timeframe);
+        setMetrics(parsedMetrics);
+        setHealth(parseHealth(body));
+        // Probe-backed responses may omit computedAt while still exposing the
+        // publisher's latest observation — fall back to that rather than
+        // leaving the badge stuck on "unknown".
+        const healthTimestamp = parsedMetrics.computedAt ?? parsedMetrics.lastPublisherTxTimestamp;
+        if (healthTimestamp) {
+          setFreshness(calculateFreshness(healthTimestamp, parsedMetrics.lastPublisherTxTimestamp));
+        }
+      })
+      .catch((fetchError) => {
+        if (!isActive) return;
+        setError(
+          fetchError instanceof Error ? fetchError.message : 'Unable to load reputation data'
+        );
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoading(false);
+        }
+      });
+
+    fetch(`/api/reputation/${encodeURIComponent(anchorId)}/history?window=30d`)
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error(`Failed to load history data (${response.status})`);
+        }
+        return response.json();
+      })
+      .then((body) => {
+        if (!isActive || !body) return;
+        const buckets = (body.buckets || []) as Array<{ settlementLatencyMs: number | null }>;
+        let lastVal = 0;
+        const dataPoints = buckets.map((b) => {
+          if (b.settlementLatencyMs !== null) {
+            lastVal = b.settlementLatencyMs / 1000;
+          }
+          return lastVal;
+        });
+        setHistoryData(dataPoints);
+      })
+      .catch(() => {
+        // Silently catch history errors to keep scorecard functional
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [anchorId, timeframe]);
+
+  const enoughData = hasEnoughData(metrics.outcomesCount);
+  const remaining = MIN_OUTCOMES_THRESHOLD - metrics.outcomesCount;
+  const anchorObj = ANCHORS.find((a) => a.id === anchorId);
+  const anchorName = anchorObj?.name ?? anchorId;
+  const anchorMetadata = anchorObj?.metadata;
+
+  const compositeScore =
+    metrics.fillRate !== null && metrics.slippageP50 !== null && metrics.settleP50 !== null
+      ? composite({
+          fillRate: metrics.fillRate > 1 ? metrics.fillRate / 100 : metrics.fillRate,
+          slippage: metrics.slippageP50 / 100,
+          settleSeconds: metrics.settleP50,
+        })
+      : null;
+
+  return (
+    <Card className="space-y-4">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <AnchorLogo anchorId={anchorId} anchorName={anchorName} size="sm" />
+          <p className="text-sm font-medium text-secondary-text">
+            <span className="font-semibold text-primary-text">{anchorName}</span> reputation
+          </p>
+          {latestOracleTxHash && (
+            <a
+              href={`${STELLAR_EXPERT_TX_BASE}/${latestOracleTxHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="View latest oracle transaction on stellar.expert"
+              className="text-secondary-text hover:text-accent dark:hover:text-accent transition-colors"
+            >
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
+        </div>
+        <p className="text-xs text-fg-muted">Window: {timeframe}</p>
+      </div>
+
+      {isLoading ? (
+        <div className="overflow-hidden rounded-xl border border-border">
+          <Skeleton rows={3} />
+        </div>
+      ) : error ? (
+        <div className="rounded-xl border border-status-down/40 bg-bg-sunken p-4 text-sm text-status-down">
+          {error}
+        </div>
+      ) : !hasReputationMetrics(metrics) ? (
+        // An anchor with no settled outcomes still has a probe record, and until
+        // now this branch threw that away and rendered a flat "no metrics" card.
+        // Absence of reputation is not absence of observation.
+        health ? (
+          <HealthPanel health={health} anchorName={anchorName} />
+        ) : (
+          <div className="rounded-xl border border-border bg-bg-sunken p-4 text-sm text-secondary-text /60">
+            No reputation metrics available for this anchor.
+          </div>
+        )
+      ) : !enoughData ? (
+        <div className="flex flex-col items-center justify-center py-10 px-4 text-center border rounded-xl bg-bg-sunken/50 /30 border-border">
+          <div className="w-12 h-12 mb-4 rounded-full bg-accent-subtle flex items-center justify-center text-accent dark:text-accent">
+            <svg
+              aria-hidden="true"
+              className="w-6 h-6"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+              />
+            </svg>
+          </div>
+          <h3 className="text-sm font-semibold text-primary-text mb-1">Collecting Data</h3>
+          <p className="text-sm text-fg-muted max-w-sm mb-5">
+            We are still evaluating {anchorName}. We need <strong>{remaining}</strong> more outcome
+            {remaining !== 1 ? 's' : ''} to generate a reliable, statistically significant
+            reputation score.
+          </p>
+          <div className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-secondary-text bg-bg-sunken/70 rounded-full">
+            Expected scorecard generation: {estimateTimeToThreshold(metrics.outcomesCount)}
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <FreshnessBadge freshness={freshness} />
+          {compositeScore !== null && (
+            <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+              <div className="flex items-center gap-1.5">
+                <dt className="text-xs uppercase tracking-wide text-fg-muted">Composite score</dt>
+                <Tooltip
+                  content={
+                    <CompositeScoreBreakdown
+                      fillRate={metrics.fillRate}
+                      slippageP50={metrics.slippageP50}
+                      settleP50={metrics.settleP50}
+                      sampleSize={metrics.outcomesCount}
+                    />
+                  }
+                >
+                  <Info
+                    className="h-3.5 w-3.5 text-secondary-text"
+                    aria-label="How the composite score is calculated"
+                  />
+                </Tooltip>
+              </div>
+              <dd className="mt-3 text-2xl font-semibold text-primary-text">
+                {compositeScore.toFixed(2)}
+              </dd>
+            </div>
+          )}
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+              <dt className="text-xs uppercase tracking-wide text-fg-muted">Fill rate</dt>
+              <dd className="mt-3 text-2xl font-semibold text-primary-text">
+                {formatFillRate(metrics.fillRate)}
+              </dd>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+              <dt className="text-xs uppercase tracking-wide text-fg-muted">Settle</dt>
+              <dd className="mt-3 space-y-2 text-sm text-primary-text">
+                <div className="flex items-center justify-between">
+                  <span className="text-fg-muted">p50</span>
+                  <span>{formatSeconds(metrics.settleP50)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-fg-muted">p95</span>
+                  <span>{formatSeconds(metrics.settleP95)}</span>
+                </div>
+                {historyData.length > 0 && (
+                  <div
+                    className="pt-2 flex justify-center border-t border-border"
+                    data-testid="scorecard-sparkline"
+                  >
+                    <Sparkline data={historyData} />
+                  </div>
+                )}
+              </dd>
+            </div>
+
+            <div className="rounded-2xl border border-border bg-bg-sunken p-4 /60">
+              <dt className="text-xs uppercase tracking-wide text-fg-muted">Slippage</dt>
+              <dd className="mt-3 space-y-2 text-sm text-primary-text">
+                <div className="flex items-center justify-between">
+                  <span className="text-fg-muted">p50</span>
+                  <span>{formatPercent(metrics.slippageP50)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-fg-muted">p95</span>
+                  <span>{formatPercent(metrics.slippageP95)}</span>
+                </div>
+              </dd>
+            </div>
+          </div>
+          {anchorMetadata && <MetadataSection metadata={anchorMetadata} />}
+        </div>
+      )}
+    </Card>
+  );
+}

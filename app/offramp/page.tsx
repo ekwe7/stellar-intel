@@ -7,6 +7,7 @@ import { CorridorSelector } from '@/components/ui/CorridorSelector'
 import { RateTable } from '@/components/offramp/RateTable'
 import { ExecuteDrawer } from '@/components/offramp/ExecuteDrawer'
 import { StatusTracker } from '@/components/offramp/StatusTracker'
+import { MIN_RECEIVE_TOLERANCE } from '@/lib/rate-ranking'
 import { useAnchorRates } from '@/hooks/useAnchorRates'
 import { useFreighter } from '@/hooks/useFreighter'
 import { useWithdrawStatus } from '@/hooks/useWithdrawStatus'
@@ -140,6 +141,11 @@ export default function OfframpPage() {
         rate={selectedRate}
         amount={amount}
         publicKey={publicKey ?? ''}
+        minReceive={
+          selectedRate?.totalReceived != null
+            ? (selectedRate.totalReceived * (1 - MIN_RECEIVE_TOLERANCE)).toFixed(2)
+            : undefined
+        }
         onClose={handleDrawerClose}
         onExecuteStarted={handleExecuteStarted}
       />

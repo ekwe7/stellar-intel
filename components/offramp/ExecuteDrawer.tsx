@@ -4,6 +4,7 @@ import { authenticate } from '@/lib/stellar/sep10';
 import { initiateWithdraw, getWithdrawTransactionRecord } from '@/lib/stellar/sep24';
 import { getResolvedAnchorById } from '@/lib/stellar/anchors';
 import { buildWithdrawPayment, signAndSubmitPayment } from '@/lib/stellar/horizon';
+import { checkMinReceive, executionFailed, trackFunnelEvent } from '@/lib/rate-ranking';
 import type { AnchorRate, ExecuteDrawerStep } from '@/types';
 import { KycIframe } from './KycIframe';
 
@@ -26,6 +27,8 @@ interface ExecuteDrawerProps {
   rate: AnchorRate | null;
   amount: string;
   publicKey: string;
+  minReceive?: string | undefined;
+  firmQuote?: unknown;
   onClose: () => void;
   /** Called once the Stellar payment is submitted; closes the drawer and hands tracking data to the page. */
   onExecuteStarted: (transactionId: string, transferServer: string, jwt: string) => void;
@@ -33,9 +36,19 @@ interface ExecuteDrawerProps {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStarted }: ExecuteDrawerProps) {
+export function ExecuteDrawer({
+  rate,
+  amount,
+  publicKey,
+  minReceive,
+  firmQuote,
+  onClose,
+  onExecuteStarted,
+}: ExecuteDrawerProps) {
   const [step, setStep] = useState<ExecuteDrawerStep>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isNonRetryable, setIsNonRetryable] = useState(false);
+  const [estimateNote, setEstimateNote] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [kycUrl, setKycUrl] = useState<string | null>(null);
   const [kycOrigin, setKycOrigin] = useState<string | null>(null);
@@ -65,6 +78,8 @@ export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStart
 
     setStep('authenticating');
     setErrorMsg(null);
+    setIsNonRetryable(false);
+    setEstimateNote(null);
     setTxHash(null);
 
     try {
@@ -103,7 +118,34 @@ export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStart
       // Step 4 — Fetch transaction record
       setStep('building');
       const transferServer = anchor.TRANSFER_SERVER_SEP0024!;
-      const record = await getWithdrawTransactionRecord(transferServer, transactionId, auth.jwt);
+      const record = (await getWithdrawTransactionRecord(transferServer, transactionId, auth.jwt)) as {
+        withdrawAnchorAccount: string;
+        memo: string;
+        memoType: string;
+        amountOut?: string;
+      };
+
+      // Guard check: compare anchor amount_out against minReceive floor unless firm quote
+      const isFirmQuote = Boolean(
+        firmQuote || (rate as Record<string, unknown>)?.firmQuote || rate.source === 'sep38'
+      );
+      if (!isFirmQuote) {
+        const check = checkMinReceive(record.amountOut, minReceive);
+        if (check.reason === 'no_estimate') {
+          setEstimateNote(
+            "This anchor didn't share an estimate before payment. The final amount is set by the anchor."
+          );
+        } else if (!check.ok) {
+          const anchorName = rate.anchorName || 'Anchor';
+          const currency = rate.corridorId.split('-')[1]?.toUpperCase() ?? '';
+          const copy = `${anchorName} now estimates you'll receive ${record.amountOut} ${currency}, below your minimum of ${minReceive} ${currency}. Nothing has been sent. Choose another anchor or try again later.`;
+          setErrorMsg(copy);
+          setIsNonRetryable(true);
+          setStep('error');
+          trackFunnelEvent(executionFailed, { error_class: 'below_min_receive' });
+          return;
+        }
+      }
 
       // Step 5 — Build payment
       const tx = await buildWithdrawPayment({
@@ -129,7 +171,7 @@ export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStart
       const message = err instanceof Error ? err.message : 'Unknown error';
 
       // Determine if it's a "User Rejected" case to avoid noisy error UI.
-      if (message.includes('User rejected') || message.includes('User cancelled')) {
+      if (message.includes('User rejected')) {
         setStep('idle');
         return;
       }
@@ -246,6 +288,13 @@ export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStart
             </div>
           )}
 
+          {/* Estimate note (e.g. no estimate shared) */}
+          {estimateNote && (
+            <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+              {estimateNote}
+            </p>
+          )}
+
           {/* Step indicator — hidden during KYC iframe */}
           {step !== 'kyc' && <StepIndicator step={step} />}
 
@@ -284,12 +333,21 @@ export function ExecuteDrawer({ rate, amount, publicKey, onClose, onExecuteStart
                 </button>
               )}
               {step === 'error' && (
-                <button
-                  onClick={handleExecute}
-                  className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
-                >
-                  Try Again
-                </button>
+                isNonRetryable ? (
+                  <button
+                    onClick={onClose}
+                    className="w-full rounded-xl bg-gray-100 py-3 text-sm font-semibold text-gray-900 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600"
+                  >
+                    Close
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleExecute}
+                    className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                  >
+                    Try Again
+                  </button>
+                )
               )}
               {step === 'done' && (
                 <button

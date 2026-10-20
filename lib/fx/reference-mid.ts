@@ -1,5 +1,5 @@
 import { USDC_ASSET } from '@/constants/anchors';
-import { getUsdFxRate as fetchUsdFxRate } from '@/lib/fx/rates';
+import { getFxRate as fetchFxRate, getUsdFxRate as fetchUsdFxRate } from '@/lib/fx/rates';
 import { getOrderBook as fetchOrderBook, type OrderBookData } from '@/lib/stellar/horizon';
 
 /**
@@ -22,6 +22,7 @@ import { getOrderBook as fetchOrderBook, type OrderBookData } from '@/lib/stella
 export interface ReferenceMidDeps {
   getUsdFxRate?: typeof fetchUsdFxRate;
   getOrderBook?: typeof fetchOrderBook;
+  getFxRate?: typeof fetchFxRate;
 }
 
 export interface ReferenceMidPrice {
@@ -55,11 +56,14 @@ export async function referenceMidPrice(
   fiatCode: string,
   deps: ReferenceMidDeps = {}
 ): Promise<ReferenceMidPrice> {
-  const getUsdFxRate = deps.getUsdFxRate ?? fetchUsdFxRate;
+  const getFxRate = deps.getFxRate ?? fetchFxRate;
+  const getUsdFxRate = deps.getUsdFxRate ?? ((ccy: string) => getFxRate('USD', ccy));
   const getOrderBook = deps.getOrderBook ?? fetchOrderBook;
 
-  if (asset.code === USDC_ASSET.code && asset.issuer === USDC_ASSET.issuer) {
-    const price = await getUsdFxRate(fiatCode);
+  if (asset.code === USDC_ASSET.code && (asset.issuer === USDC_ASSET.issuer || !asset.issuer)) {
+    const price = deps.getUsdFxRate
+      ? await deps.getUsdFxRate(fiatCode)
+      : await getFxRate('USD', fiatCode);
     return {
       price,
       source: 'fx',

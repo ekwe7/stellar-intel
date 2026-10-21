@@ -113,9 +113,13 @@ export function DepositDrawer({
         setStep('quoting');
         try {
           const parts = rate.corridorId.split('-');
-          const fiatCode = (
-            (rate as Record<string, unknown>).fiatCode as string | undefined
-          ) || (parts[0]?.toLowerCase() === anchor.assetCode.toLowerCase() ? parts[1] : parts[0])?.toUpperCase() || 'USD';
+          const fiatCode =
+            ((rate as Record<string, unknown>).fiatCode as string | undefined) ||
+            (parts[0]?.toLowerCase() === anchor.assetCode.toLowerCase()
+              ? parts[1]
+              : parts[0]
+            )?.toUpperCase() ||
+            'USD';
 
           const quote = await postSep38Quote(quoteServer, auth.jwt, {
             sell_asset: `iso4217:${fiatCode}`,
@@ -130,7 +134,10 @@ export function DepositDrawer({
           });
         } catch (quoteErr) {
           // If quoting throws, fall back to the indicative flow and log it. Never block the deposit.
-          console.warn('[DepositDrawer] SEP-38 firm quote failed, falling back to indicative rate:', quoteErr);
+          console.warn(
+            '[DepositDrawer] SEP-38 firm quote failed, falling back to indicative rate:',
+            quoteErr
+          );
           setFirmQuote(null);
           quoteId = undefined;
         }
@@ -238,7 +245,12 @@ export function DepositDrawer({
               className="rounded-lg p-1 text-gray-400 hover:text-gray-600 disabled:opacity-40 dark:hover:text-gray-200"
             >
               <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
               </svg>
             </button>
           </div>

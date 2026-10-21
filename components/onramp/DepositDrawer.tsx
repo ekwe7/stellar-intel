@@ -108,7 +108,7 @@ export function DepositDrawer({
         try {
           const parts = rate.corridorId.split('-');
           const fiatCode =
-            ((rate as Record<string, unknown>).fiatCode as string | undefined) ||
+            (rate as unknown as { fiatCode?: string }).fiatCode ||
             (parts[0]?.toLowerCase() === anchor.assetCode.toLowerCase()
               ? parts[1]
               : parts[0]
@@ -128,6 +128,7 @@ export function DepositDrawer({
           });
         } catch (quoteErr) {
           // If quoting throws, fall back to the indicative flow and log it. Never block the deposit.
+          // eslint-disable-next-line no-console
           console.warn(
             '[DepositDrawer] SEP-38 firm quote failed, falling back to indicative rate:',
             quoteErr

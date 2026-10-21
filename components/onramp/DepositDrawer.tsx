@@ -18,13 +18,7 @@ import type { AnchorRate, Sep38Quote } from '@/types';
 // ─── Step definitions ─────────────────────────────────────────────────────────
 
 export type DepositDrawerStep =
-  | 'idle'
-  | 'authenticating'
-  | 'quoting'
-  | 'initiating'
-  | 'kyc'
-  | 'done'
-  | 'error';
+  'idle' | 'authenticating' | 'quoting' | 'initiating' | 'kyc' | 'done' | 'error';
 
 const STEP_LABELS: Record<DepositDrawerStep, string> = {
   idle: 'Ready',

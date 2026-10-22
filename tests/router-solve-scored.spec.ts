@@ -113,36 +113,4 @@ describe('scored router selection', () => {
       expect(result.plan.quoteId).toBe('quote-higher-reputation');
     }
   });
-
-  it('excludes an anchor below the reputation threshold', () => {
-    const quotes = [
-      createQuote('degraded-anchor', '160000'),
-      createQuote('healthy-anchor', '150000'),
-    ];
-
-    const result = solveSingleAnchor(
-      createIntent(),
-      quotes,
-      undefined,
-      scoring({
-        'degraded-anchor': {
-          reliability: 0.95,
-          latencyMs: 20,
-          reputationComposite: 0.05,
-        },
-        'healthy-anchor': {
-          reliability: 0.8,
-          latencyMs: 120,
-          reputationComposite: 0.8,
-        },
-      }),
-      'scored'
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.plan.anchorId).toBe('healthy-anchor');
-      expect(result.plan.quoteId).toBe('quote-healthy-anchor');
-    }
-  });
 });

@@ -154,7 +154,7 @@ idempotency guard holds under a re-entrant call.
 
 ## 4. Test suite
 
-**56 `#[test]` functions across 13 integration test files**, all under
+**69 `#[test]` functions across 14 integration test files**, all under
 `contracts/reputation/tests/`. There are **zero inline `#[cfg(test)]` modules in
 `src/`** — auditors usually ask, so: every test is an integration test against
 the public entrypoints, none reach into private state.
@@ -162,13 +162,14 @@ the public entrypoints, none reach into private state.
 | File               | Tests | Focus                                      |
 | ------------------ | ----- | ------------------------------------------ |
 | `multisig.rs`      | 11    | Admin proposal / acceptance / cancellation |
+| `upgrade.rs`       | 10    | WASM upgrade authorization                 |
 | `auth_gaps.rs`     | 8     | Unauthorized-call boundaries               |
-| `basic.rs`         | 6     | Init, registry, happy paths                |
+| `hardening.rs`     | 8     | Phase 2 bounds, reset, freshness, bump     |
+| `basic.rs`         | 5     | Init, registry, happy paths                |
 | `corridor_rate.rs` | 5     | Corridor rate publish/read                 |
 | `footprint.rs`     | 5     | Storage footprint bounds                   |
 | `publishers.rs`    | 5     | Publisher set management                   |
 | `corridor.rs`      | 4     | Corridor aggregation                       |
-| `upgrade.rs`       | 4     | WASM upgrade authorization                 |
 | `score.rs`         | 3     | Composite scoring                          |
 | `gas.rs`           | 2     | Invocation cost bounds                     |
 | `history.rs`       | 1     | Bounded outcome history                    |
@@ -176,7 +177,7 @@ the public entrypoints, none reach into private state.
 | `revoke.rs`        | 1     | Publisher revocation                       |
 
 The read-only consumer crate `crates/stellar-intel-reputation` carries a further
-**7 tests** in `tests/integration.rs`.
+**11 tests** in `tests/integration.rs`.
 
 ### CI
 
@@ -189,8 +190,10 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-A separate `rust` job runs `cargo test`, `cargo doc` and
-`cargo publish --dry-run` for the consumer crate.
+Two separate jobs cover the Rust SDK crates: `rust (stellar-intel-reputation)`
+runs `cargo test`, `cargo doc` and `cargo publish --dry-run` for the consumer
+crate, while `rust (stellar-intel-client)` runs `cargo fmt`, `cargo clippy`,
+`cargo test`, `cargo doc` and `cargo publish --dry-run` for the REST client crate.
 
 **Disclosure:** `contracts/reputation` was **not compiled by any workflow until
 #908**, and had been failing to build since **#887**. It is stated here rather

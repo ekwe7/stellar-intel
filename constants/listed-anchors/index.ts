@@ -13,6 +13,7 @@ import afreum from './afreum.json';
 import apsTokens from './aps-tokens.json';
 import aquarius from './aquarius.json';
 import audd from './audd.json';
+import bitbond from './bitbond.json';
 import blackRidgeTrust from './black-ridge-trust.json';
 import fxdao from './fxdao.json';
 import gmoTrust from './gmo-trust.json';
@@ -38,6 +39,7 @@ const RAW: unknown[] = [
   apsTokens,
   aquarius,
   audd,
+  bitbond,
   blackRidgeTrust,
   fxdao,
   gmoTrust,

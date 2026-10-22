@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { AnchorRate } from '@/types';
-import type { ServerRatesResult } from '../server-rates';
+import type { ServerRatesResult } from '@/lib/stellar/server-rates';
 
 // fetchCorridorRates makes live anchor calls; stub it so the snapshot logic is
 // tested deterministically with no network.
 const fetchCorridorRates = vi.fn();
-vi.mock('../server-rates', () => ({
+vi.mock('@/lib/stellar/server-rates', () => ({
   fetchCorridorRates: (corridorId: string, amount: string) =>
     fetchCorridorRates(corridorId, amount),
 }));
@@ -14,7 +14,7 @@ import {
   buildBestAnchorSnapshot,
   getBestAnchorSnapshot,
   clearBestAnchorSnapshotCache,
-} from '../snapshot';
+} from '@/lib/stellar/snapshot';
 import { CORRIDORS } from '@/constants/anchors';
 
 function rate(over: Partial<AnchorRate> & Pick<AnchorRate, 'anchorId'>): AnchorRate {

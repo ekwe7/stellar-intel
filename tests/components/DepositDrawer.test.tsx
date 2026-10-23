@@ -5,9 +5,13 @@ import type { AnchorRate, Sep38Quote } from '@/types';
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
-vi.mock('@/lib/stellar/sep10', () => ({
-  authenticate: vi.fn(),
-}));
+vi.mock('@/lib/stellar/sep10', async () => {
+  const actual = await vi.importActual<any>('@/lib/stellar/sep10');
+  return {
+    ...actual,
+    authenticate: vi.fn(),
+  };
+});
 
 vi.mock('@/lib/stellar/sep24', () => ({
   initiateDeposit: vi.fn(),
@@ -29,28 +33,46 @@ vi.mock('@/lib/stellar/anchors', () => ({
 
 let mockKycAction: 'complete' | 'cancel' | 'error' | 'wait' = 'complete';
 
-vi.mock('@/components/offramp/KycIframe', () => ({
-  KycIframe: ({
-    onComplete,
-    onCancel,
-    onError,
-  }: {
-    url: string;
-    origin: string;
-    onComplete: (transactionId: string) => void;
-    onCancel: () => void;
-    onError: (error: Error) => void;
-  }) => {
-    if (mockKycAction === 'complete') {
-      onComplete('txn-deposit-123');
-    } else if (mockKycAction === 'cancel') {
-      onCancel();
-    } else if (mockKycAction === 'error') {
-      onError(new Error('User cancelled the transaction'));
-    }
-    return <div data-testid="kyc-iframe" />;
-  },
-}));
+vi.mock('@/components/offramp/KycIframe', async () => {
+  const React = await import('react');
+  return {
+    KycIframe: ({
+      origin,
+      onComplete,
+      onCancel,
+      onError,
+    }: {
+      url: string;
+      origin: string;
+      onComplete: (transactionId: string) => void;
+      onCancel: () => void;
+      onError: (error: Error) => void;
+    }) => {
+      React.useEffect(() => {
+        const handleMessage = (event: MessageEvent) => {
+          if (event.origin !== origin) return;
+          const data = event.data as { type?: string; transaction_id?: string };
+          if (data?.type === 'stellar_transaction_created' && data.transaction_id) {
+            onComplete(data.transaction_id);
+          } else if (data?.type === 'stellar_cancel') {
+            onCancel();
+          }
+        };
+        window.addEventListener('message', handleMessage);
+        return () => window.removeEventListener('message', handleMessage);
+      }, [origin, onComplete, onCancel]);
+
+      if (mockKycAction === 'complete') {
+        onComplete('txn-deposit-123');
+      } else if (mockKycAction === 'cancel') {
+        onCancel();
+      } else if (mockKycAction === 'error') {
+        onError(new Error('User cancelled the transaction'));
+      }
+      return <div data-testid="kyc-iframe" />;
+    },
+  };
+});
 
 import * as sep10 from '@/lib/stellar/sep10';
 import * as sep24 from '@/lib/stellar/sep24';
@@ -88,6 +110,14 @@ const ANCHOR = {
   WEB_AUTH_ENDPOINT: 'https://auth.cowrie.exchange',
   ANCHOR_QUOTE_SERVER: 'https://quotes.cowrie.exchange',
   SIGNING_KEY: 'G...',
+  domain: 'cowrie.exchange',
+  NETWORK_PASSPHRASE: null,
+  ORG_URL: null,
+  ORG_SUPPORT_EMAIL: null,
+  ORG_SUPPORT_URL: null,
+  CURRENCIES: [
+    { code: 'USDC', issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN' },
+  ],
   capabilities: { sep10: true, sep24: true, sep38: true, sep12: false },
 };
 
@@ -105,10 +135,10 @@ const FIRM_QUOTE: Sep38Quote = {
   expires_at: new Date(Date.now() + 60_000).toISOString(),
   total_price: '1580.00',
   price: '1580.00',
-  sell_asset: 'iso4217:NGN',
   sell_amount: '100',
-  buy_asset: 'stellar:USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
   buy_amount: '98.50',
+  fee: { total: '1.50' },
+  context: 'sep24',
 };
 
 beforeEach(() => {

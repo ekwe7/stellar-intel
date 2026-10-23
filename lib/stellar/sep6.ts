@@ -2,7 +2,6 @@ import { Sep6NotSupportedError, SepError, TimeoutError, parseSepErrorBody } from
 import { TERMINAL_STATES } from './sep24';
 import { mapToCanonical, normalizeStatus } from './sep24-status-map';
 import { getUsdFxRate } from '@/lib/fx/rates';
-import { referenceMidPrice } from '@/lib/fx/reference-mid';
 import type {
   WithdrawStatusValue,
   WithdrawStatus,
@@ -261,17 +260,15 @@ export async function sep6IndicativeRate(
 ): Promise<AnchorRate> {
   const transferServer = getSep6TransferServer(toml);
 
-  const [info, ref] = await Promise.all([
+  const [info, fxRate] = await Promise.all([
     getSep6Info(transferServer, anchor.assetCode),
-    referenceMidPrice({ code: anchor.assetCode, issuer: anchor.assetIssuer }, fiatCode, {
-      getUsdFxRate,
-    }),
+    getUsdFxRate(fiatCode),
   ]);
 
   const feeFixed = info.feeFixed;
   const feePercent = info.feePercent;
   const netSellAmount = Math.max(0, sellAmount - feeFixed) * (1 - feePercent / 100);
-  const totalReceived = netSellAmount * ref.price;
+  const totalReceived = netSellAmount * fxRate;
   const effectiveRate = sellAmount > 0 ? totalReceived / sellAmount : 0;
 
   if (
@@ -297,8 +294,6 @@ export async function sep6IndicativeRate(
     exchangeRate: effectiveRate,
     totalReceived,
     source: 'sep6-info',
-    referenceSource: ref.source,
-    referenceDetail: ref.detail,
     updatedAt: new Date(),
   };
 }

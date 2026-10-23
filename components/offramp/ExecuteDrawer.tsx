@@ -4,8 +4,6 @@ import { authenticate, NetworkMismatchError } from '@/lib/stellar/sep10';
 import { initiateWithdraw, getWithdrawTransactionRecord } from '@/lib/stellar/sep24';
 import { getCorridorAsset, getResolvedAnchorById, sep38AssetId } from '@/lib/stellar/anchors';
 import { buildWithdrawPayment, signAndSubmitPayment } from '@/lib/stellar/horizon';
-import { checkMinReceive, executionFailed, trackFunnelEvent } from '@/lib/rate-ranking';
-import type { AnchorRate, ExecuteDrawerStep } from '@/types';
 import {
   assertSep38Capable,
   postSep38Quote,
@@ -14,6 +12,8 @@ import {
 } from '@/lib/stellar/sep38';
 import { measureClient } from '@/lib/metrics';
 import { amountBucket, FUNNEL_EVENTS, trackFunnelEvent } from '@/lib/analytics';
+import * as rateRanking from '@/lib/rate-ranking';
+import { checkMinReceive, executionFailed } from '@/lib/rate-ranking';
 import { stepTimeEstimate } from '@/lib/stellar/step-estimates';
 import { classifyExecuteError, isRetryableExecuteError } from '@/lib/errors/messages';
 import type { AnchorRate, ExecuteDrawerStep, Sep38Quote } from '@/types';
@@ -49,7 +49,7 @@ interface ExecuteDrawerProps {
   amount: string;
   publicKey: string;
   minReceive?: string | undefined;
-  firmQuote?: unknown;
+  firmQuote?: boolean | Sep38Quote | undefined;
   onClose: () => void;
   /** Called once the Stellar payment is submitted; closes the drawer and hands tracking data to the page. */
   onExecuteStarted: (
@@ -92,6 +92,8 @@ export function ExecuteDrawer({
         rate={rate}
         amount={amount}
         publicKey={publicKey}
+        minReceive={minReceive}
+        firmQuote={firmQuote}
         onClose={onClose}
         onExecuteStarted={onExecuteStarted}
       />
@@ -103,14 +105,16 @@ function ExecuteDrawerContent({
   rate,
   amount,
   publicKey,
+  minReceive,
+  firmQuote: firmQuoteProp,
   onClose,
   onExecuteStarted,
 }: ExecuteDrawerProps) {
   const [step, setStep] = useState<ExecuteDrawerStep>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorIsRetryable, setErrorIsRetryable] = useState(true);
   const [isNonRetryable, setIsNonRetryable] = useState(false);
   const [estimateNote, setEstimateNote] = useState<string | null>(null);
-  const [errorIsRetryable, setErrorIsRetryable] = useState(true);
   const [txHash, setTxHash] = useState<string | null>(null);
   const [kycUrl, setKycUrl] = useState<string | null>(null);
   const [kycOrigin, setKycOrigin] = useState<string | null>(null);
@@ -377,7 +381,12 @@ function ExecuteDrawerContent({
       // Step 4 — Fetch transaction record
       setStep('building');
       const transferServer = anchor.TRANSFER_SERVER_SEP0024!;
-      const record = (await getWithdrawTransactionRecord(transferServer, transactionId, auth.jwt)) as {
+      const record = (await getWithdrawTransactionRecord(
+        transferServer,
+        transactionId,
+        auth.jwt,
+        signal
+      )) as {
         withdrawAnchorAccount: string;
         memo: string;
         memoType: string;
@@ -386,7 +395,10 @@ function ExecuteDrawerContent({
 
       // Guard check: compare anchor amount_out against minReceive floor unless firm quote
       const isFirmQuote = Boolean(
-        firmQuote || (rate as Record<string, unknown>)?.firmQuote || rate.source === 'sep38'
+        firmQuoteProp ||
+          firmQuote ||
+          ((rate as unknown) as Record<string, unknown>)?.firmQuote ||
+          rate.source === 'sep38'
       );
       if (!isFirmQuote) {
         const check = checkMinReceive(record.amountOut, minReceive);
@@ -395,22 +407,17 @@ function ExecuteDrawerContent({
             "This anchor didn't share an estimate before payment. The final amount is set by the anchor."
           );
         } else if (!check.ok) {
-          const anchorName = rate.anchorName || 'Anchor';
+          const anchorName = anchor.name ?? rate.anchorName ?? 'Anchor';
           const currency = rate.corridorId.split('-')[1]?.toUpperCase() ?? '';
           const copy = `${anchorName} now estimates you'll receive ${record.amountOut} ${currency}, below your minimum of ${minReceive} ${currency}. Nothing has been sent. Choose another anchor or try again later.`;
           setErrorMsg(copy);
           setIsNonRetryable(true);
+          setErrorIsRetryable(false);
           setStep('error');
-          trackFunnelEvent(executionFailed, { error_class: 'below_min_receive' });
+          rateRanking.trackFunnelEvent(executionFailed, { error_class: 'below_min_receive' });
           return;
         }
       }
-      const record = await getWithdrawTransactionRecord(
-        transferServer,
-        transactionId,
-        auth.jwt,
-        signal
-      );
 
       // Step 5 — Build payment
       const tx = await buildWithdrawPayment({
@@ -457,7 +464,7 @@ function ExecuteDrawerContent({
       if ((err as Error).name === 'AbortError') return;
 
       // Determine if it's a "User Rejected" case to avoid noisy error UI.
-      if (message.includes('User rejected')) {
+      if (message.includes('User rejected') || message.includes('User cancelled')) {
         setStep('idle');
         return;
       }
@@ -544,6 +551,8 @@ function ExecuteDrawerContent({
 
   const handleStartOver = () => {
     setErrorMsg(null);
+    setIsNonRetryable(false);
+    setEstimateNote(null);
     setStep('idle');
   };
 
@@ -667,20 +676,18 @@ function ExecuteDrawerContent({
             </div>
           )}
 
-          {/* Estimate note (e.g. no estimate shared) */}
-          {estimateNote && (
-            <p className="mb-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-              {estimateNote}
-            </p>
-          )}
-
-          {/* Step indicator — hidden during KYC iframe */}
-          {step !== 'kyc' && <StepIndicator step={step} />}
           {/* SEP-6 form placeholder — shown when anchor uses programmatic KYC */}
           {step === 'form' && (
             <div className="mb-5 rounded-xl border border-border p-4 text-center">
               <p className="text-sm text-secondary-text">SEP-6 form flow — coming soon</p>
             </div>
+          )}
+
+          {/* Estimate note (e.g. no estimate shared) */}
+          {estimateNote && (
+            <p className="mb-4 rounded-lg bg-bg-sunken px-3 py-2 text-xs text-secondary-text">
+              {estimateNote}
+            </p>
           )}
 
           {/* Step indicator — hidden during KYC iframe and SEP-6 form */}
@@ -735,29 +742,22 @@ function ExecuteDrawerContent({
                   {STEP_LABELS[step]}
                 </button>
               )}
-              {step === 'error' && (
-                isNonRetryable ? (
+              {step === 'error' &&
+                (isNonRetryable ? (
                   <button
                     onClick={onClose}
-                    className="w-full rounded-xl bg-gray-100 py-3 text-sm font-semibold text-gray-900 transition-colors hover:bg-gray-200 dark:bg-gray-700 dark:text-white dark:hover:bg-gray-600"
+                    className="w-full rounded-xl bg-bg-sunken py-3 text-sm font-semibold text-primary-text transition-colors hover:bg-bg-sunken dark:hover:bg-bg-sunken"
                   >
                     Close
                   </button>
                 ) : (
                   <button
-                    onClick={handleExecute}
-                    className="w-full rounded-xl bg-blue-600 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700"
+                    onClick={errorIsRetryable ? handleExecute : handleStartOver}
+                    className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-background transition-colors hover:opacity-90"
                   >
-                    Try Again
+                    {errorIsRetryable ? 'Retry' : 'Start Over'}
                   </button>
-                )
-                <button
-                  onClick={errorIsRetryable ? handleExecute : handleStartOver}
-                  className="w-full rounded-xl bg-accent py-3 text-sm font-semibold text-background transition-colors hover:opacity-90"
-                >
-                  {errorIsRetryable ? 'Retry' : 'Start Over'}
-                </button>
-              )}
+                ))}
               {step === 'done' && (
                 <button
                   onClick={onClose}

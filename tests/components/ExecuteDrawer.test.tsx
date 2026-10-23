@@ -1,20 +1,3 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { ExecuteDrawer } from '@/components/offramp/ExecuteDrawer';
-import * as rateRanking from '@/lib/rate-ranking';
-import type { AnchorRate } from '@/types';
-
-// ─── Module mocks ─────────────────────────────────────────────────────────────
-
-vi.mock('@/lib/stellar/sep10', () => ({
-  authenticate: vi.fn(),
-}));
-
-vi.mock('@/lib/stellar/sep24', () => ({
-  initiateWithdraw: vi.fn(),
-  openWithdrawPopup: vi.fn(),
-  getWithdrawTransactionRecord: vi.fn(),
-}));
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { configure, render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ExecuteDrawer } from '@/components/offramp/ExecuteDrawer';
@@ -53,11 +36,6 @@ vi.mock('@/lib/stellar/sep1', () => ({
   getTransferServer: vi.fn(),
 }));
 
-vi.mock('@/lib/stellar/anchors', () => ({
-  getAnchorById: vi.fn(),
-  getResolvedAnchorById: vi.fn(),
-}));
-
 vi.mock('@/lib/stellar/sep38', async () => {
   const actual = await vi.importActual<any>('@/lib/stellar/sep38');
   return {
@@ -77,33 +55,6 @@ vi.mock('@/lib/stellar/horizon', () => ({
   signAndSubmitPayment: vi.fn(),
 }));
 
-let mockKycAction: 'complete' | 'cancel' | 'error' = 'complete';
-
-vi.mock('@/components/offramp/KycIframe', () => ({
-  KycIframe: ({
-    onComplete,
-    onCancel,
-    onError,
-  }: {
-    url: string;
-    origin: string;
-    onComplete: (transactionId: string) => void;
-    onCancel: () => void;
-    onError: (error: Error) => void;
-  }) => {
-    if (mockKycAction === 'complete') {
-      onComplete('txn-abc-123');
-    } else if (mockKycAction === 'cancel') {
-      onCancel();
-    } else if (mockKycAction === 'error') {
-      onError(new Error('User cancelled the transaction'));
-    }
-    return <div data-testid="kyc-iframe" />;
-  },
-}));
-
-import * as sep10 from '@/lib/stellar/sep10';
-import * as sep24 from '@/lib/stellar/sep24';
 vi.mock('@/components/offramp/KycIframe', async () => {
   const React = await import('react');
   return {
@@ -143,10 +94,10 @@ import * as sep38 from '@/lib/stellar/sep38';
 import * as sep1 from '@/lib/stellar/sep1';
 import * as anchors from '@/lib/stellar/anchors';
 import * as horizon from '@/lib/stellar/horizon';
+import * as rateRanking from '@/lib/rate-ranking';
 
 const mockAuthenticate = vi.mocked(sep10.authenticate);
 const mockInitiateWithdraw = vi.mocked(sep24.initiateWithdraw);
-const mockGetWithdrawTransactionRecord = vi.mocked(sep24.getWithdrawTransactionRecord);
 const mockOpenWithdrawPopup = vi.mocked(sep24.openWithdrawPopup);
 const mockGetWithdrawTransactionRecord = vi.mocked(sep24.getWithdrawTransactionRecord);
 const mockPostSep38Quote = vi.mocked(sep38.postSep38Quote);
@@ -225,7 +176,6 @@ const AUTH = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockKycAction = 'complete';
   // These tests exercise execution, not consent. Pre-accept the Terms for the
   // test wallet so the one-time acknowledgment gate (#741) does not stand in
   // front of every assertion — the gate itself is covered in tests/consent.spec.tsx.
@@ -308,24 +258,6 @@ describe('ExecuteDrawer', () => {
 
     fireEvent.click(screen.getByText('Start Off-ramp'));
 
-    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
-
-    expect(mockAuthenticate).toHaveBeenCalledWith(RESOLVED_ANCHOR, PUBLIC_KEY);
-    expect(mockInitiateWithdraw).toHaveBeenCalledWith(RESOLVED_ANCHOR, expect.anything());
-    expect(mockBuildWithdrawPayment).toHaveBeenCalled();
-    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
-    expect(screen.getByText('abc123txhash')).toBeInTheDocument();
-  });
-
-  it('shows the error message and a Try Again button when authentication fails', async () => {
-    mockAuthenticate.mockRejectedValue(new Error('SEP-10 challenge failed'));
-
-    render(
-      <ExecuteDrawer
-        rate={RATE}
-
-    fireEvent.click(screen.getByText('Start Off-ramp'));
-
     await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
 
     expect(mockAuthenticate).toHaveBeenCalledWith(RESOLVED_ANCHOR, PUBLIC_KEY);
@@ -363,14 +295,6 @@ describe('ExecuteDrawer', () => {
       />
     );
 
-    fireEvent.click(screen.getByText('Start Off-ramp'));
-
-    await waitFor(() => expect(screen.getByText('SEP-10 challenge failed')).toBeInTheDocument());
-    expect(screen.getByRole('button', { name: 'Try Again' })).toBeInTheDocument();
-  });
-
-  it('shows the error when the user cancels the KYC popup', async () => {
-    mockKycAction = 'cancel';
     expect(screen.getByText('100 BRL')).toBeInTheDocument();
     expect(screen.getByText('2 BRL')).toBeInTheDocument();
     fireEvent.click(screen.getByText('Start Off-ramp'));
@@ -446,7 +370,6 @@ describe('ExecuteDrawer', () => {
     fireEvent.click(screen.getByText('Start Off-ramp'));
 
     await waitFor(() =>
-      expect(screen.getByText('User cancelled the transaction')).toBeInTheDocument()
       expect(
         screen.getByText(/Switch network in Freighter to Mainnet \(Public\)/)
       ).toBeInTheDocument()
@@ -519,14 +442,6 @@ describe('ExecuteDrawer', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('stops with error copy and does not sign when estimate is below the minReceive floor', async () => {
-    mockGetWithdrawTransactionRecord.mockResolvedValue({
-      withdrawAnchorAccount: 'GANCHOR123',
-      memo: 'TEST_MEMO',
-      memoType: 'text',
-      amountOut: '150000',
-    } as never);
-
   it('closes the drawer on Escape in idle state', () => {
     const onClose = vi.fn();
     render(
@@ -550,38 +465,12 @@ describe('ExecuteDrawer', () => {
         rate={RATE}
         amount="100"
         publicKey={PUBLIC_KEY}
-        minReceive="151743.20"
-        onClose={vi.fn()}
         onClose={onClose}
         onExecuteStarted={vi.fn()}
       />
     );
 
     fireEvent.click(screen.getByText('Start Off-ramp'));
-
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          "Cowrie now estimates you'll receive 150000 NGN, below your minimum of 151743.20 NGN. Nothing has been sent. Choose another anchor or try again later."
-        )
-      ).toBeInTheDocument()
-    );
-
-    expect(mockSignAndSubmitPayment).not.toHaveBeenCalled();
-    expect(mockTrackFunnelEvent).toHaveBeenCalledWith('executionFailed', {
-      error_class: 'below_min_receive',
-    });
-    expect(screen.queryByRole('button', { name: 'Try Again' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
-  });
-
-  it('proceeds to sign and submit payment when estimate meets the minReceive floor', async () => {
-    mockGetWithdrawTransactionRecord.mockResolvedValue({
-      withdrawAnchorAccount: 'GANCHOR123',
-      memo: 'TEST_MEMO',
-      memoType: 'text',
-      amountOut: '155000',
-    } as never);
     await screen.findByText('Auth failed');
 
     // The Escape handler closes over `step`, so it is torn down and
@@ -655,28 +544,12 @@ describe('ExecuteDrawer', () => {
         rate={RATE}
         amount="100"
         publicKey={PUBLIC_KEY}
-        minReceive="151743.20"
         onClose={vi.fn()}
         onExecuteStarted={vi.fn()}
       />
     );
 
     fireEvent.click(screen.getByText('Start Off-ramp'));
-
-    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
-
-    expect(mockBuildWithdrawPayment).toHaveBeenCalled();
-    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
-    expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
-  });
-
-  it('proceeds to sign and displays the note when anchor does not provide an estimate', async () => {
-    mockGetWithdrawTransactionRecord.mockResolvedValue({
-      withdrawAnchorAccount: 'GANCHOR123',
-      memo: 'TEST_MEMO',
-      memoType: 'text',
-      amountOut: undefined,
-    } as never);
 
     await waitFor(() =>
       expect(mockPostSep38Quote).toHaveBeenCalledWith(
@@ -709,7 +582,6 @@ describe('ExecuteDrawer', () => {
         rate={RATE}
         amount="100"
         publicKey={PUBLIC_KEY}
-        minReceive="151743.20"
         onClose={vi.fn()}
         onExecuteStarted={vi.fn()}
       />
@@ -717,23 +589,6 @@ describe('ExecuteDrawer', () => {
 
     fireEvent.click(screen.getByText('Start Off-ramp'));
 
-    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
-
-    expect(
-      screen.getByText(
-        "This anchor didn't share an estimate before payment. The final amount is set by the anchor."
-      )
-    ).toBeInTheDocument();
-    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
-  });
-
-  it('skips the minReceive check when firmQuote is set', async () => {
-    mockGetWithdrawTransactionRecord.mockResolvedValue({
-      withdrawAnchorAccount: 'GANCHOR123',
-      memo: 'TEST_MEMO',
-      memoType: 'text',
-      amountOut: '100', // Below floor if checked
-    } as never);
     await waitFor(() => expect(mockInitiateWithdraw).toHaveBeenCalled());
 
     expect(mockPostSep38Quote).not.toHaveBeenCalled();
@@ -761,26 +616,10 @@ describe('ExecuteDrawer', () => {
         />
       );
 
-    render(
-      <ExecuteDrawer
-        rate={RATE}
-        amount="100"
-        publicKey={PUBLIC_KEY}
-        minReceive="151743.20"
-        firmQuote={true}
-        onClose={vi.fn()}
-        onExecuteStarted={vi.fn()}
-      />
-    );
       fireEvent.click(screen.getByText('Start Off-ramp'));
 
       await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
 
-    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
-
-    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
-    expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
       // Let the quote's expiry timer fire before the (human-driven) KYC step completes.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(61_000);
@@ -805,6 +644,174 @@ describe('ExecuteDrawer', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('stops with error copy and does not sign when estimate is below the minReceive floor', async () => {
+    mockGetWithdrawTransactionRecord.mockResolvedValue({
+      withdrawAnchorAccount: 'GANCHOR123',
+      memo: 'TEST_MEMO',
+      memoType: 'text',
+      amountOut: '150000',
+    } as never);
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        minReceive="151743.20"
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Cowrie now estimates you'll receive 150000 NGN, below your minimum of 151743.20 NGN. Nothing has been sent. Choose another anchor or try again later."
+        )
+      ).toBeInTheDocument()
+    );
+
+    expect(mockSignAndSubmitPayment).not.toHaveBeenCalled();
+    expect(mockTrackFunnelEvent).toHaveBeenCalledWith('executionFailed', {
+      error_class: 'below_min_receive',
+    });
+    expect(screen.queryByRole('button', { name: 'Try Again' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0);
+  });
+
+  it('proceeds to sign and submit payment when estimate meets the minReceive floor', async () => {
+    mockGetWithdrawTransactionRecord.mockResolvedValue({
+      withdrawAnchorAccount: 'GANCHOR123',
+      memo: 'TEST_MEMO',
+      memoType: 'text',
+      amountOut: '155000',
+    } as never);
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        minReceive="151743.20"
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
+
+    expect(mockBuildWithdrawPayment).toHaveBeenCalled();
+    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
+    expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
+  });
+
+  it('proceeds to sign and displays the note when anchor does not provide an estimate', async () => {
+    mockGetWithdrawTransactionRecord.mockResolvedValue({
+      withdrawAnchorAccount: 'GANCHOR123',
+      memo: 'TEST_MEMO',
+      memoType: 'text',
+      amountOut: undefined,
+    } as never);
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        minReceive="151743.20"
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
+
+    expect(
+      screen.getByText(
+        "This anchor didn't share an estimate before payment. The final amount is set by the anchor."
+      )
+    ).toBeInTheDocument();
+    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
+  });
+
+  it('skips the minReceive check when firmQuote is set', async () => {
+    mockGetWithdrawTransactionRecord.mockResolvedValue({
+      withdrawAnchorAccount: 'GANCHOR123',
+      memo: 'TEST_MEMO',
+      memoType: 'text',
+      amountOut: '100', // Below floor if checked
+    } as never);
+
+    render(
+      <ExecuteDrawer
+        rate={RATE}
+        amount="100"
+        publicKey={PUBLIC_KEY}
+        minReceive="151743.20"
+        firmQuote={true}
+        onClose={vi.fn()}
+        onExecuteStarted={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByText('Start Off-ramp'));
+
+    await waitFor(() => expect(screen.getByTestId('kyc-iframe-mock')).toBeInTheDocument());
+
+    act(() => {
+      window.dispatchEvent(
+        new MessageEvent('message', {
+          data: { type: 'stellar_transaction_created', transaction_id: 'txn-123' },
+          origin: 'https://anchor.example',
+        })
+      );
+    });
+
+    await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
+
+    expect(mockSignAndSubmitPayment).toHaveBeenCalled();
+    expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
   });
 });
 

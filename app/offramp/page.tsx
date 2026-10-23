@@ -1,17 +1,3 @@
-'use client'
-import { useState, useCallback, useEffect } from 'react'
-import { TERMINAL_STATES } from '@/lib/stellar/sep24'
-import { WalletButton } from '@/components/ui/WalletButton'
-import { AmountInput } from '@/components/ui/AmountInput'
-import { CorridorSelector } from '@/components/ui/CorridorSelector'
-import { RateTable } from '@/components/offramp/RateTable'
-import { ExecuteDrawer } from '@/components/offramp/ExecuteDrawer'
-import { StatusTracker } from '@/components/offramp/StatusTracker'
-import { MIN_RECEIVE_TOLERANCE } from '@/lib/rate-ranking'
-import { useAnchorRates } from '@/hooks/useAnchorRates'
-import { useFreighter } from '@/hooks/useFreighter'
-import { useWithdrawStatus } from '@/hooks/useWithdrawStatus'
-import type { AnchorRate } from '@/types'
 'use client';
 import { Suspense, useState, useCallback, useEffect, useRef } from 'react';
 import dynamic from 'next/dynamic';
@@ -46,6 +32,7 @@ import { getCorridorAsset, getCorridorById } from '@/lib/stellar/anchors';
 import { signIntent } from '@/lib/intent/sign';
 import type { Intent } from '@/lib/intent/hash';
 import type { AnchorRate } from '@/types';
+import { MIN_RECEIVE_TOLERANCE } from '@/lib/rate-ranking';
 
 // Not needed until the user picks a rate to execute — split into its own
 // chunk so it doesn't pad the initial /offramp bundle.
@@ -402,12 +389,12 @@ function OfframpContent() {
       <ExecuteDrawer
         rate={selectedRate}
         amount={amount}
-        publicKey={publicKey ?? ''}
         minReceive={
           selectedRate?.totalReceived != null
             ? (selectedRate.totalReceived * (1 - MIN_RECEIVE_TOLERANCE)).toFixed(2)
             : undefined
         }
+        publicKey={publicKey ?? ''}
         onClose={handleDrawerClose}
         onExecuteStarted={handleExecuteStarted}
       />

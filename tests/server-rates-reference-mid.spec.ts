@@ -31,11 +31,7 @@ vi.mock('@/lib/reputation/scores', () => ({
 }));
 
 import { fetchCorridorRates } from '@/lib/stellar/server-rates';
-import {
-  getAnchorsByCorridorId,
-  getCorridorById,
-  getCorridorAsset,
-} from '@/lib/stellar/anchors';
+import { getAnchorsByCorridorId, getCorridorById, getCorridorAsset } from '@/lib/stellar/anchors';
 import { resolveAnchor } from '@/lib/stellar/sep1';
 import { assertSep38Capable } from '@/lib/stellar/sep38';
 import { getSep24Info } from '@/lib/stellar/sep24';
@@ -43,12 +39,12 @@ import { getSep6Info } from '@/lib/stellar/sep6';
 import { getFxRate, getUsdFxRate } from '@/lib/fx/rates';
 import { getOrderBook } from '@/lib/stellar/horizon';
 
-const USDC_ISSUER = USDC_ASSET.issuer;
+const USDC_ISSUER = USDC_ASSET.issuer ?? '';
 
 const usdcCorridor: Corridor = {
   id: 'usdc-ngn',
   from: 'USDC',
-  fromIssuer: USDC_ISSUER,
+  fromIssuer: USDC_ISSUER || null,
   fromPeg: 'USD',
   to: 'NGN',
   countryCode: 'NG',
@@ -104,7 +100,7 @@ const xlmAnchor: Anchor = {
   homeDomain: 'xlm.example.com',
   corridors: ['xlm-ngn'],
   assetCode: 'XLM',
-  assetIssuer: null,
+  assetIssuer: '',
   seps: ['sep24'],
 };
 
@@ -149,8 +145,8 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     vi.mocked(getCorridorById).mockReturnValue(usdcCorridor);
     vi.mocked(getCorridorAsset).mockReturnValue({
       code: 'USDC',
-      issuer: USDC_ISSUER,
-      name: 'USD Coin',
+      issuer: USDC_ISSUER || null,
+      peg: 'USD',
     });
     vi.mocked(resolveAnchor).mockResolvedValue(usdcToml);
     vi.mocked(getSep24Info).mockResolvedValue({
@@ -166,15 +162,16 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     expect(result.errors).toHaveLength(0);
     expect(result.rates).toHaveLength(1);
     const rate = result.rates[0];
-    expect(rate.anchorId).toBe('moneygram');
-    expect(rate.source).toBe('sep24-fee');
-    expect(rate.referenceSource).toBe('fx');
-    expect(rate.referenceDetail).toBe('USDC treated as 1 USD × open.er-api USD→NGN');
+    expect(rate).toBeDefined();
+    expect(rate!.anchorId).toBe('moneygram');
+    expect(rate!.source).toBe('sep24-fee');
+    expect(rate!.referenceSource).toBe('fx');
+    expect(rate!.referenceDetail).toBe('USDC treated as 1 USD × open.er-api USD→NGN');
     // Net: (100 - 2) * 1600 = 156800
-    expect(rate.totalReceived).toBeCloseTo(156800);
-    expect(rate.exchangeRate).toBeCloseTo(1568);
-    expect(rate.fee).toBe(2);
-    expect(rate.feeType).toBe('flat');
+    expect(rate!.totalReceived).toBeCloseTo(156800);
+    expect(rate!.exchangeRate).toBeCloseTo(1568);
+    expect(rate!.fee).toBe(2);
+    expect(rate!.feeType).toBe('flat');
   });
 
   it('a non-USD asset uses the SDEX mid and carries referenceSource: "sdex+fx"', async () => {
@@ -183,7 +180,7 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     vi.mocked(getCorridorAsset).mockReturnValue({
       code: 'XLM',
       issuer: null,
-      name: 'Stellar Lumens',
+      peg: 'USD',
     });
     vi.mocked(resolveAnchor).mockResolvedValue(xlmToml);
     vi.mocked(getSep24Info).mockResolvedValue({
@@ -202,14 +199,15 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     expect(result.errors).toHaveLength(0);
     expect(result.rates).toHaveLength(1);
     const rate = result.rates[0];
-    expect(rate.anchorId).toBe('test-xlm');
-    expect(rate.source).toBe('sep24-fee');
-    expect(rate.referenceSource).toBe('sdex+fx');
-    expect(rate.referenceDetail).toBe('SDEX XLM/USDC mid 0.12 × open.er-api USD→NGN');
+    expect(rate).toBeDefined();
+    expect(rate!.anchorId).toBe('test-xlm');
+    expect(rate!.source).toBe('sep24-fee');
+    expect(rate!.referenceSource).toBe('sdex+fx');
+    expect(rate!.referenceDetail).toBe('SDEX XLM/USDC mid 0.12 × open.er-api USD→NGN');
     // Net: (100 - 1) * (0.12 * 1600) = 99 * 192 = 19008
-    expect(rate.totalReceived).toBeCloseTo(19008);
-    expect(rate.exchangeRate).toBeCloseTo(190.08);
-    expect(rate.fee).toBe(1);
+    expect(rate!.totalReceived).toBeCloseTo(19008);
+    expect(rate!.exchangeRate).toBeCloseTo(190.08);
+    expect(rate!.fee).toBe(1);
   });
 
   it('a reference failure puts the anchor in errors with the reason', async () => {
@@ -218,7 +216,7 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     vi.mocked(getCorridorAsset).mockReturnValue({
       code: 'XLM',
       issuer: null,
-      name: 'Stellar Lumens',
+      peg: 'USD',
     });
     vi.mocked(resolveAnchor).mockResolvedValue(xlmToml);
     vi.mocked(getSep24Info).mockResolvedValue({
@@ -245,7 +243,7 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     vi.mocked(getCorridorAsset).mockReturnValue({
       code: 'XLM',
       issuer: null,
-      name: 'Stellar Lumens',
+      peg: 'USD',
     });
     vi.mocked(resolveAnchor).mockResolvedValue(xlmToml);
     vi.mocked(getSep24Info).mockResolvedValue({
@@ -263,7 +261,9 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     expect(result.rates).toHaveLength(0);
     expect(result.errors).toHaveLength(1);
     expect(result.errors[0]?.anchorId).toBe('test-xlm');
-    expect(result.errors[0]?.reason).toContain('SDEX order book against USDC is empty on the bid side');
+    expect(result.errors[0]?.reason).toContain(
+      'SDEX order book against USDC is empty on the bid side'
+    );
   });
 
   it('SEP-6 indicative estimate carries referenceSource and referenceDetail', async () => {
@@ -280,15 +280,16 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     vi.mocked(getCorridorAsset).mockReturnValue({
       code: 'XLM',
       issuer: null,
-      name: 'Stellar Lumens',
+      peg: 'USD',
     });
     vi.mocked(resolveAnchor).mockResolvedValue(sep6Toml);
     vi.mocked(getSep6Info).mockResolvedValue({
       enabled: true,
       feeFixed: 2,
       feePercent: 0,
-      minAmount: 1,
-      maxAmount: 10000,
+      min: 1,
+      max: 10000,
+      fields: {} as any,
     });
     vi.mocked(getOrderBook).mockResolvedValue(bookFixture([0.118], [0.122]));
     vi.mocked(getUsdFxRate).mockResolvedValue(1600);
@@ -299,10 +300,11 @@ describe('server-rates reference mid (Q38017 / ANC015)', () => {
     expect(result.errors).toHaveLength(0);
     expect(result.rates).toHaveLength(1);
     const rate = result.rates[0];
-    expect(rate.source).toBe('sep6-fee');
-    expect(rate.referenceSource).toBe('sdex+fx');
-    expect(rate.referenceDetail).toBe('SDEX XLM/USDC mid 0.12 × open.er-api USD→NGN');
+    expect(rate).toBeDefined();
+    expect(rate!.source).toBe('sep6-fee');
+    expect(rate!.referenceSource).toBe('sdex+fx');
+    expect(rate!.referenceDetail).toBe('SDEX XLM/USDC mid 0.12 × open.er-api USD→NGN');
     // Net: (100 - 2) * (0.12 * 1600) = 98 * 192 = 18816
-    expect(rate.totalReceived).toBeCloseTo(18816);
+    expect(rate!.totalReceived).toBeCloseTo(18816);
   });
 });

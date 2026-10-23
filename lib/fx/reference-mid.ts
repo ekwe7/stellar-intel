@@ -52,7 +52,7 @@ function bestBidAsk(book: OrderBookData): { bid: number; ask: number } {
 }
 
 export async function referenceMidPrice(
-  asset: { code: string; issuer: string | null },
+  asset: { code: string; issuer?: string | null },
   fiatCode: string,
   deps: ReferenceMidDeps = {}
 ): Promise<ReferenceMidPrice> {

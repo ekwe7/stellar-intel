@@ -94,7 +94,7 @@ import * as sep38 from '@/lib/stellar/sep38';
 import * as sep1 from '@/lib/stellar/sep1';
 import * as anchors from '@/lib/stellar/anchors';
 import * as horizon from '@/lib/stellar/horizon';
-import * as rateRanking from '@/lib/rate-ranking';
+import * as analytics from '@/lib/analytics';
 
 const mockAuthenticate = vi.mocked(sep10.authenticate);
 const mockInitiateWithdraw = vi.mocked(sep24.initiateWithdraw);
@@ -106,7 +106,7 @@ const mockGetAnchorById = vi.mocked(anchors.getAnchorById);
 const mockGetResolvedAnchorById = vi.mocked(anchors.getResolvedAnchorById);
 const mockBuildWithdrawPayment = vi.mocked(horizon.buildWithdrawPayment);
 const mockSignAndSubmitPayment = vi.mocked(horizon.signAndSubmitPayment);
-const mockTrackFunnelEvent = vi.spyOn(rateRanking, 'trackFunnelEvent');
+const mockTrackFunnelEvent = vi.spyOn(analytics, 'trackFunnelEvent');
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -652,7 +652,7 @@ describe('ExecuteDrawer', () => {
       memo: 'TEST_MEMO',
       memoType: 'text',
       amountOut: '150000',
-    } as never);
+    });
 
     render(
       <ExecuteDrawer
@@ -687,7 +687,7 @@ describe('ExecuteDrawer', () => {
     );
 
     expect(mockSignAndSubmitPayment).not.toHaveBeenCalled();
-    expect(mockTrackFunnelEvent).toHaveBeenCalledWith('executionFailed', {
+    expect(mockTrackFunnelEvent).toHaveBeenCalledWith('execution_failed', {
       error_class: 'below_min_receive',
     });
     expect(screen.queryByRole('button', { name: 'Try Again' })).not.toBeInTheDocument();
@@ -700,7 +700,7 @@ describe('ExecuteDrawer', () => {
       memo: 'TEST_MEMO',
       memoType: 'text',
       amountOut: '155000',
-    } as never);
+    });
 
     render(
       <ExecuteDrawer
@@ -738,8 +738,7 @@ describe('ExecuteDrawer', () => {
       withdrawAnchorAccount: 'GANCHOR123',
       memo: 'TEST_MEMO',
       memoType: 'text',
-      amountOut: undefined,
-    } as never);
+    });
 
     render(
       <ExecuteDrawer
@@ -775,13 +774,15 @@ describe('ExecuteDrawer', () => {
     expect(mockSignAndSubmitPayment).toHaveBeenCalled();
   });
 
-  it('skips the minReceive check when firmQuote is set', async () => {
+  it('skips the minReceive check when a firm SEP-38 quote was locked', async () => {
+    mockGetResolvedAnchorById.mockResolvedValue(SEP38_ANCHOR);
+    mockPostSep38Quote.mockResolvedValue(FIRM_QUOTE);
     mockGetWithdrawTransactionRecord.mockResolvedValue({
       withdrawAnchorAccount: 'GANCHOR123',
       memo: 'TEST_MEMO',
       memoType: 'text',
-      amountOut: '100', // Below floor if checked
-    } as never);
+      amountOut: '100', // Below the floor if it were checked
+    });
 
     render(
       <ExecuteDrawer
@@ -789,7 +790,6 @@ describe('ExecuteDrawer', () => {
         amount="100"
         publicKey={PUBLIC_KEY}
         minReceive="151743.20"
-        firmQuote={true}
         onClose={vi.fn()}
         onExecuteStarted={vi.fn()}
       />
@@ -810,8 +810,10 @@ describe('ExecuteDrawer', () => {
 
     await waitFor(() => expect(screen.getByText('Transaction submitted')).toBeInTheDocument());
 
+    expect(mockPostSep38Quote).toHaveBeenCalled();
     expect(mockSignAndSubmitPayment).toHaveBeenCalled();
     expect(screen.queryByText(/below your minimum of/)).not.toBeInTheDocument();
+    expect(mockTrackFunnelEvent).not.toHaveBeenCalledWith('execution_failed', expect.anything());
   });
 });
 

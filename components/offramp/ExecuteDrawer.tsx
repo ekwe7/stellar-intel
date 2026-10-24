@@ -12,8 +12,7 @@ import {
 } from '@/lib/stellar/sep38';
 import { measureClient } from '@/lib/metrics';
 import { amountBucket, FUNNEL_EVENTS, trackFunnelEvent } from '@/lib/analytics';
-import * as rateRanking from '@/lib/rate-ranking';
-import { checkMinReceive, executionFailed } from '@/lib/rate-ranking';
+import { checkMinReceive } from '@/lib/rate-ranking';
 import { stepTimeEstimate } from '@/lib/stellar/step-estimates';
 import { classifyExecuteError, isRetryableExecuteError } from '@/lib/errors/messages';
 import type { AnchorRate, ExecuteDrawerStep, Sep38Quote } from '@/types';
@@ -48,8 +47,8 @@ interface ExecuteDrawerProps {
   rate: AnchorRate | null;
   amount: string;
   publicKey: string;
+  /** Floor for the anchor's own amount_out estimate; the payment is blocked below it. */
   minReceive?: string | undefined;
-  firmQuote?: boolean | Sep38Quote | undefined;
   onClose: () => void;
   /** Called once the Stellar payment is submitted; closes the drawer and hands tracking data to the page. */
   onExecuteStarted: (
@@ -67,7 +66,6 @@ export function ExecuteDrawer({
   amount,
   publicKey,
   minReceive,
-  firmQuote,
   onClose,
   onExecuteStarted,
 }: ExecuteDrawerProps) {
@@ -93,7 +91,6 @@ export function ExecuteDrawer({
         amount={amount}
         publicKey={publicKey}
         minReceive={minReceive}
-        firmQuote={firmQuote}
         onClose={onClose}
         onExecuteStarted={onExecuteStarted}
       />
@@ -106,7 +103,6 @@ function ExecuteDrawerContent({
   amount,
   publicKey,
   minReceive,
-  firmQuote: firmQuoteProp,
   onClose,
   onExecuteStarted,
 }: ExecuteDrawerProps) {
@@ -381,40 +377,32 @@ function ExecuteDrawerContent({
       // Step 4 — Fetch transaction record
       setStep('building');
       const transferServer = anchor.TRANSFER_SERVER_SEP0024!;
-      const record = (await getWithdrawTransactionRecord(
+      const record = await getWithdrawTransactionRecord(
         transferServer,
         transactionId,
         auth.jwt,
         signal
-      )) as {
-        withdrawAnchorAccount: string;
-        memo: string;
-        memoType: string;
-        amountOut?: string;
-      };
-
-      // Guard check: compare anchor amount_out against minReceive floor unless firm quote
-      const isFirmQuote = Boolean(
-        firmQuoteProp ||
-          firmQuote ||
-          ((rate as unknown) as Record<string, unknown>)?.firmQuote ||
-          rate.source === 'sep38'
       );
-      if (!isFirmQuote) {
+
+      // Min-receive guard (#1503): compare the anchor's own amount_out estimate
+      // with the floor before the user signs. A firm SEP-38 quote (locked in
+      // step 1.5) is already binding, so it is not guarded again.
+      if (quoteId === undefined) {
         const check = checkMinReceive(record.amountOut, minReceive);
-        if (check.reason === 'no_estimate') {
+        if (check.ok && check.reason === 'no_estimate') {
           setEstimateNote(
             "This anchor didn't share an estimate before payment. The final amount is set by the anchor."
           );
         } else if (!check.ok) {
           const anchorName = anchor.name ?? rate.anchorName ?? 'Anchor';
           const currency = rate.corridorId.split('-')[1]?.toUpperCase() ?? '';
-          const copy = `${anchorName} now estimates you'll receive ${record.amountOut} ${currency}, below your minimum of ${minReceive} ${currency}. Nothing has been sent. Choose another anchor or try again later.`;
-          setErrorMsg(copy);
+          setErrorMsg(
+            `${anchorName} now estimates you'll receive ${check.amountOut} ${currency}, below your minimum of ${check.minReceive} ${currency}. Nothing has been sent. Choose another anchor or try again later.`
+          );
           setIsNonRetryable(true);
           setErrorIsRetryable(false);
           setStep('error');
-          rateRanking.trackFunnelEvent(executionFailed, { error_class: 'below_min_receive' });
+          trackFunnelEvent(FUNNEL_EVENTS.executionFailed, { error_class: 'below_min_receive' });
           return;
         }
       }

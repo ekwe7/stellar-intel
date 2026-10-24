@@ -10,6 +10,7 @@
  * All arithmetic uses explicit rounding to avoid sub-cent comparisons.
  */
 
+import { compareDecimals } from '@/lib/decimal';
 import type { AnchorRate, RateComparison } from '@/types';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -149,80 +150,40 @@ function resolvedNetReceived(rate: AnchorRate, precision: number): number {
   return Math.round(raw * factor) / factor;
 }
 
-// ─── Min Receive & Funnel Tracking ───────────────────────────────────────────
+// ─── Min receive ─────────────────────────────────────────────────────────────
 
 /**
  * Floor tolerance applied to the expected net received amount when verifying
- * an anchor's returned amount_out estimate before signing payment (2%).
+ * the anchor's own `amount_out` estimate before the user signs the payment (2%).
  */
 export const MIN_RECEIVE_TOLERANCE = 0.02;
 
-export const executionFailed = 'executionFailed';
+export type MinReceiveCheck =
+  | { ok: true; reason: 'no_floor' | 'no_estimate' | 'meets_floor' }
+  | { ok: false; amountOut: string; minReceive: string };
 
-export type MinReceiveReason = 'below_min' | 'no_estimate' | 'meets_min' | 'no_floor';
+const DECIMAL_STRING = /^[+-]?(\d+(\.\d*)?|\.\d+)$/;
 
-export interface MinReceiveCheckResult {
-  ok: boolean;
-  reason?: MinReceiveReason;
+function isDecimalString(value: string | undefined): value is string {
+  return value !== undefined && DECIMAL_STRING.test(value.trim());
 }
 
 /**
- * Checks whether the anchor's own amount_out estimate satisfies the minimum
- * acceptable receive floor.
+ * Checks the anchor's own `amount_out` estimate against the minimum acceptable
+ * receive amount. Amounts are compared as exact decimals, never as floats.
  *
- * - When minReceive is omitted: returns ok: true with reason 'no_floor'.
- * - When amountOut is missing or empty: returns ok: true with reason 'no_estimate' so the caller can continue with a note.
- * - When amountOut is below minReceive: returns ok: false with reason 'below_min'.
- * - When amountOut meets or exceeds minReceive: returns ok: true with reason 'meets_min'.
+ * - No usable `minReceive`: `ok` with `no_floor`.
+ * - No usable `amountOut`: `ok` with `no_estimate`, so the caller can continue
+ *   and tell the user the final amount is set by the anchor.
+ * - `amountOut` below `minReceive`: not ok, with both figures for the message.
+ * - Otherwise: `ok` with `meets_floor`.
  */
 export function checkMinReceive(
-  amountOut?: string | number | null,
-  minReceive?: string | number | null
-): MinReceiveCheckResult {
-  if (
-    minReceive === undefined ||
-    minReceive === null ||
-    minReceive === '' ||
-    isNaN(Number(String(minReceive).replace(/,/g, '').trim()))
-  ) {
-    return { ok: true, reason: 'no_floor' };
-  }
-
-  if (
-    amountOut === undefined ||
-    amountOut === null ||
-    (typeof amountOut === 'string' && amountOut.trim() === '') ||
-    isNaN(Number(String(amountOut).replace(/,/g, '').trim()))
-  ) {
-    return { ok: true, reason: 'no_estimate' };
-  }
-
-  const numAmountOut = Number(String(amountOut).replace(/,/g, '').trim());
-  const numMinReceive = Number(String(minReceive).replace(/,/g, '').trim());
-
-  if (numAmountOut < numMinReceive) {
-    return { ok: false, reason: 'below_min' };
-  }
-
-  return { ok: true, reason: 'meets_min' };
-}
-
-/**
- * Emits funnel tracking events for monitoring conversion and failure reasons.
- */
-export function trackFunnelEvent(event: string, properties?: Record<string, unknown>): void {
-  if (
-    typeof window !== 'undefined' &&
-    typeof (
-      window as unknown as {
-        __trackFunnelEvent?: (evt: string, props?: Record<string, unknown>) => void;
-      }
-    ).__trackFunnelEvent === 'function'
-  ) {
-    (
-      window as unknown as {
-        __trackFunnelEvent: (evt: string, props?: Record<string, unknown>) => void;
-      }
-    ).__trackFunnelEvent(event, properties);
-  }
+  amountOut: string | undefined,
+  minReceive: string | undefined
+): MinReceiveCheck {
+  if (!isDecimalString(minReceive)) return { ok: true, reason: 'no_floor' };
+  if (!isDecimalString(amountOut)) return { ok: true, reason: 'no_estimate' };
+  if (compareDecimals(amountOut, minReceive) < 0) return { ok: false, amountOut, minReceive };
+  return { ok: true, reason: 'meets_floor' };
 }

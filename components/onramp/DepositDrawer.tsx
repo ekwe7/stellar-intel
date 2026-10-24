@@ -237,9 +237,15 @@ export function DepositDrawer({
               onClick={onClose}
               disabled={isRunning}
               aria-label="Close"
-              className="rounded-lg p-1 text-gray-400 hover:text-gray-600 disabled:opacity-40 dark:hover:text-gray-200"
+              className="rounded-lg p-1 text-secondary-text hover:text-primary-text disabled:opacity-40"
             >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
                 <path
                   strokeLinecap="round"
                   strokeLinejoin="round"
@@ -376,7 +382,7 @@ function StepIndicator({ step }: { step: DepositDrawerStep }) {
               className={`flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-[10px] font-bold
                 ${isComplete ? 'bg-green-500 text-white' : ''}
                 ${isActive ? 'bg-blue-600 text-white animate-pulse' : ''}
-                ${isPending ? 'bg-gray-200 text-gray-400 dark:bg-gray-700' : ''}
+                ${isPending ? 'bg-bg-sunken text-secondary-text' : ''}
                 ${step === 'done' ? 'bg-green-500 text-white' : ''}
               `}
             >
@@ -388,7 +394,7 @@ function StepIndicator({ step }: { step: DepositDrawerStep }) {
                   ? 'font-medium text-blue-600 dark:text-blue-400'
                   : isComplete || step === 'done'
                     ? 'text-gray-500 line-through dark:text-gray-400'
-                    : 'text-gray-400 dark:text-gray-500'
+                    : 'text-secondary-text'
               }
             >
               {STEP_LABELS[s]}
@@ -407,8 +413,7 @@ function Spinner() {
       xmlns="http://www.w3.org/2000/svg"
       fill="none"
       viewBox="0 0 24 24"
-      role="status"
-      aria-label="Loading"
+      aria-hidden="true"
     >
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path

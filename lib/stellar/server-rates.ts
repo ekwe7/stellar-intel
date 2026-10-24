@@ -121,7 +121,7 @@ function isNetworkError(err: unknown): boolean {
  * Deterministic 4xx failures are never retried; transient 5xx/timeouts/fetch errors
  * get at most `retryAttempts` extra tries.
  */
-async function withTimeoutRetry<T>(
+export async function withTimeoutRetry<T>(
   fn: () => Promise<T>,
   ms: number,
   label: string,
@@ -229,9 +229,12 @@ async function indicativeRate(
       ? getFxRate(pegCode, fiatCode).then((price) => ({
           price,
           source: 'fx' as const,
-          detail: `${anchor.assetCode} pegged to ${pegCode} × open.er-api ${pegCode}→${fiatCode}`,
+          detail: `${asset.code} pegged to ${pegCode} × open.er-api ${pegCode}→${fiatCode}`,
         }))
-      : referenceMidPrice({ code: anchor.assetCode, issuer: anchor.assetIssuer }, fiatCode),
+      : referenceMidPrice({ code: asset.code, issuer: asset.issuer }, fiatCode, {
+          // Keep one FX source: USDC resolves through getFxRate, as the peg path does.
+          getUsdFxRate: (fiat) => getFxRate('USD', fiat),
+        }),
   ]);
 
   let assetInfo = info.withdraw[asset.code];
@@ -312,9 +315,12 @@ async function sep6IndicativeRate(
       ? getFxRate(pegCode, fiatCode).then((price) => ({
           price,
           source: 'fx' as const,
-          detail: `${anchor.assetCode} pegged to ${pegCode} × open.er-api ${pegCode}→${fiatCode}`,
+          detail: `${asset.code} pegged to ${pegCode} × open.er-api ${pegCode}→${fiatCode}`,
         }))
-      : referenceMidPrice({ code: anchor.assetCode, issuer: anchor.assetIssuer }, fiatCode),
+      : referenceMidPrice({ code: asset.code, issuer: asset.issuer }, fiatCode, {
+          // Keep one FX source: USDC resolves through getFxRate, as the peg path does.
+          getUsdFxRate: (fiat) => getFxRate('USD', fiat),
+        }),
   ]);
 
   const feeFixed = config.feeFixed;
